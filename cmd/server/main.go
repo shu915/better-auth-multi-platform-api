@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/shu915/better-auth-multi-platform-api/internal/auth"
+	"github.com/shu915/better-auth-multi-platform-api/internal/middleware"
 )
 
 func main() {
@@ -18,39 +23,108 @@ func main() {
 	}
 }
 
-func newMux() *http.ServeMux {
+// newMux builds the routes. authn wraps the endpoints that require a signed-in user.
+func newMux(authn func(http.Handler) http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
-			log.Printf("health: encode response: %v", err)
-		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.Handle("GET /me", authn(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := middleware.UserID(r.Context())
+		if !ok { // authn did not run: a wiring bug, never trust the request
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"user_id": userID})
+	})))
 	return mux
 }
 
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("write json response: %v", err)
+	}
+}
+
+// config is everything read from the environment.
+type config struct {
+	Port        string
+	Auth        auth.Config
+	CORSOrigins []string
+}
+
+// loadConfig reads the environment. With APP_ENV=production the settings that
+// identify the web app must be given explicitly instead of silently defaulting to localhost.
+// Auth must match the web app's Better Auth config: Issuer = BETTER_AUTH_URL, Audience = JWT_AUDIENCE.
+func loadConfig(env func(string) string) (config, error) {
+	get := func(key, fallback string) string {
+		if v := env(key); v != "" {
+			return v
+		}
+		return fallback
+	}
+	appEnv := env("APP_ENV")
+	switch appEnv {
+	case "", "development", "production":
+	default: // a typo such as "prod" must not silently disable the production checks
+		return config{}, fmt.Errorf(`APP_ENV must be "development" or "production", got %q`, appEnv)
+	}
+	port := get("PORT", "8080")
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return config{}, fmt.Errorf("PORT must be a number from 1 to 65535, got %q", port)
+	}
+	if appEnv == "production" {
+		for _, key := range []string{"AUTH_ISSUER", "AUTH_AUDIENCE", "CORS_ALLOWED_ORIGINS"} {
+			if env(key) == "" {
+				return config{}, fmt.Errorf("%s is required when APP_ENV=production", key)
+			}
+		}
+	}
+	issuer := get("AUTH_ISSUER", "http://localhost:3000")
+	return config{
+		Port: port,
+		Auth: auth.Config{
+			Issuer:   issuer,
+			Audience: get("AUTH_AUDIENCE", "better-auth-multi-platform-api"),
+			JWKSURL:  get("AUTH_JWKS_URL", issuer+"/api/auth/jwks"),
+		},
+		CORSOrigins: middleware.ParseOrigins(get("CORS_ALLOWED_ORIGINS", "http://localhost:3000")),
+	}, nil
+}
+
+// handler wires the middleware chain: CORS outermost so preflights and 401s carry CORS headers.
+func handler(verifier middleware.TokenVerifier, corsOrigins []string) http.Handler {
+	return middleware.CORS(corsOrigins)(newMux(middleware.Authenticate(verifier)))
+}
+
 func run() error {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	// Fargate sends SIGTERM on task stop; drain in-flight requests before exiting.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
+	cfg, err := loadConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
+	verifier, err := auth.NewVerifier(ctx, cfg.Auth)
+	if err != nil {
+		return err
 	}
 
 	srv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           newMux(),
+		Addr:              ":" + cfg.Port,
+		Handler:           handler(verifier, cfg.CORSOrigins),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Fargate sends SIGTERM on task stop; drain in-flight requests before exiting.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
-
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("listening on :%s", port)
+		log.Printf("listening on :%s", cfg.Port)
 		errCh <- srv.ListenAndServe()
 	}()
 
