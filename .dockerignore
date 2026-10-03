@@ -6,3 +6,7 @@ out
 docker-compose.yml
 Dockerfile
 *.md
+
+tmp
+server
+.github

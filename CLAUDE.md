@@ -17,7 +17,7 @@ JWT を取得して Go の API を直接呼ぶ(Next.js はデータの中継を�
 ## コマンド
 - `air`: 開発サーバー(localhost:8080、保存で自動再起動)
 - `docker compose up --build`: Docker で起動
-- `go build ./cmd/server`: ビルド
+- `go build -o bin/server ./cmd/server`: ビルド
 - `go test ./...`: テスト
 
 ## 設計方針
