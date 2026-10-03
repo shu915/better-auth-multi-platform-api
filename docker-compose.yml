@@ -1,7 +1,14 @@
 services:
   api:
     build: .
+    extra_hosts:
+      # Needed on Linux; Docker Desktop (macOS/Windows) already provides this name.
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8080"
     environment:
       PORT: "8080"
+      # Must equal BETTER_AUTH_URL of the web app (the JWT "iss" claim).
+      AUTH_ISSUER: "http://localhost:3000"
+      # Inside the container, localhost is the container itself; reach the host instead.
+      AUTH_JWKS_URL: "http://host.docker.internal:3000/api/auth/jwks"

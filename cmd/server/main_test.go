@@ -1,14 +1,30 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/shu915/better-auth-multi-platform-api/internal/auth"
 )
+
+var testOrigins = []string{"http://localhost:3000"}
+
+type fakeVerifier struct{}
+
+func (fakeVerifier) Verify(_ context.Context, token string) (string, error) {
+	if token == "good" {
+		return "user-1", nil
+	}
+	return "", auth.ErrInvalidToken
+}
+
+func passThrough(next http.Handler) http.Handler { return next }
 
 func TestHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
-	newMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	newMux(passThrough).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -23,9 +39,111 @@ func TestHealth(t *testing.T) {
 
 func TestHealthRejectsPost(t *testing.T) {
 	rec := httptest.NewRecorder()
-	newMux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+	newMux(passThrough).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+// These go through the real middleware chain to prove /me is actually protected.
+func TestMeRequiresAuth(t *testing.T) {
+	h := handler(fakeVerifier{}, testOrigins)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/me", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: status = %d, want 401", rec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "Bearer forged")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("forged token: status = %d, want 401", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "Bearer good")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid token: status = %d, want 200", rec.Code)
+	}
+	if got, want := rec.Body.String(), "{\"user_id\":\"user-1\"}\n"; got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestHealthNeedsNoAuth(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handler(fakeVerifier{}, testOrigins).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestPreflightToProtectedRouteSucceeds(t *testing.T) {
+	req := httptest.NewRequest(http.MethodOptions, "/me", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	rec := httptest.NewRecorder()
+	handler(fakeVerifier{}, testOrigins).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204 (it carries no credentials)", rec.Code)
+	}
+}
+
+func TestLoadConfigDefaultsInDevelopment(t *testing.T) {
+	cfg, err := loadConfig(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Port != "8080" || cfg.Auth.Issuer != "http://localhost:3000" ||
+		cfg.Auth.JWKSURL != "http://localhost:3000/api/auth/jwks" {
+		t.Errorf("unexpected defaults: %+v", cfg)
+	}
+}
+
+func TestLoadConfigProductionRequiresExplicitSettings(t *testing.T) {
+	full := map[string]string{
+		"APP_ENV":              "production",
+		"AUTH_ISSUER":          "https://web.example.com",
+		"AUTH_AUDIENCE":        "api",
+		"CORS_ALLOWED_ORIGINS": "https://web.example.com",
+	}
+	lookup := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+
+	if _, err := loadConfig(lookup(full)); err != nil {
+		t.Fatalf("complete production config rejected: %v", err)
+	}
+	for _, missing := range []string{"AUTH_ISSUER", "AUTH_AUDIENCE", "CORS_ALLOWED_ORIGINS"} {
+		m := map[string]string{}
+		for k, v := range full {
+			if k != missing {
+				m[k] = v
+			}
+		}
+		if _, err := loadConfig(lookup(m)); err == nil {
+			t.Errorf("production without %s was accepted", missing)
+		}
+	}
+}
+
+func TestLoadConfigRejectsBadValues(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"APP_ENV typo":  {"APP_ENV": "prod"},
+		"APP_ENV case":  {"APP_ENV": "Production"},
+		"PORT not num":  {"PORT": "abc"},
+		"PORT too big":  {"PORT": "70000"},
+		"PORT zero":     {"PORT": "0"},
+		"PORT negative": {"PORT": "-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadConfig(func(k string) string { return env[k] }); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
 	}
 }
