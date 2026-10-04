@@ -16,6 +16,7 @@ import (
 	"github.com/shu915/better-auth-multi-platform-api/internal/auth"
 	"github.com/shu915/better-auth-multi-platform-api/internal/db"
 	"github.com/shu915/better-auth-multi-platform-api/internal/middleware"
+	"github.com/shu915/better-auth-multi-platform-api/internal/profile"
 )
 
 func main() {
@@ -24,20 +25,23 @@ func main() {
 	}
 }
 
-// newMux builds the routes. authn wraps the endpoints that require a signed-in user.
-func newMux(authn func(http.Handler) http.Handler) *http.ServeMux {
+// newMux builds the routes. authn wraps the endpoints that require a signed-in user;
+// those return personal data, so their responses (including 401s) are also marked no-store.
+func newMux(authn func(http.Handler) http.Handler, profiles profileGetter) *http.ServeMux {
+	protect := func(h http.Handler) http.Handler { return middleware.NoStore(authn(h)) }
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.Handle("GET /me", authn(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /me", protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := middleware.UserID(r.Context())
 		if !ok { // authn did not run: a wiring bug, never trust the request
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			internalError(w)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"user_id": userID})
 	})))
+	mux.Handle("GET /me/profile", protect(getProfile(profiles)))
 	return mux
 }
 
@@ -109,8 +113,8 @@ func loadConfig(env func(string) string) (config, error) {
 }
 
 // handler wires the middleware chain: CORS outermost so preflights and 401s carry CORS headers.
-func handler(verifier middleware.TokenVerifier, corsOrigins []string) http.Handler {
-	return middleware.CORS(corsOrigins)(newMux(middleware.Authenticate(verifier)))
+func handler(verifier middleware.TokenVerifier, corsOrigins []string, profiles profileGetter) http.Handler {
+	return middleware.CORS(corsOrigins)(newMux(middleware.Authenticate(verifier), profiles))
 }
 
 func run() error {
@@ -134,7 +138,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           handler(verifier, cfg.CORSOrigins),
+		Handler:           handler(verifier, cfg.CORSOrigins, profile.NewStore(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
