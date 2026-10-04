@@ -101,7 +101,8 @@ func TestLoadConfigDefaultsInDevelopment(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Port != "8080" || cfg.Auth.Issuer != "http://localhost:3000" ||
-		cfg.Auth.JWKSURL != "http://localhost:3000/api/auth/jwks" {
+		cfg.Auth.JWKSURL != "http://localhost:3000/api/auth/jwks" ||
+		cfg.DatabaseURL != "postgres://postgres:postgres@localhost:5432/app?sslmode=disable" {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -112,13 +113,14 @@ func TestLoadConfigProductionRequiresExplicitSettings(t *testing.T) {
 		"AUTH_ISSUER":          "https://web.example.com",
 		"AUTH_AUDIENCE":        "api",
 		"CORS_ALLOWED_ORIGINS": "https://web.example.com",
+		"DATABASE_URL":         "postgres://app:secret@db.example.com:5432/app?sslmode=require",
 	}
 	lookup := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
 	if _, err := loadConfig(lookup(full)); err != nil {
 		t.Fatalf("complete production config rejected: %v", err)
 	}
-	for _, missing := range []string{"AUTH_ISSUER", "AUTH_AUDIENCE", "CORS_ALLOWED_ORIGINS"} {
+	for _, missing := range []string{"AUTH_ISSUER", "AUTH_AUDIENCE", "CORS_ALLOWED_ORIGINS", "DATABASE_URL"} {
 		m := map[string]string{}
 		for k, v := range full {
 			if k != missing {
@@ -128,6 +130,42 @@ func TestLoadConfigProductionRequiresExplicitSettings(t *testing.T) {
 		if _, err := loadConfig(lookup(m)); err == nil {
 			t.Errorf("production without %s was accepted", missing)
 		}
+	}
+}
+
+func TestLoadConfigProductionRejectsUnsafeValues(t *testing.T) {
+	base := map[string]string{
+		"APP_ENV":              "production",
+		"AUTH_ISSUER":          "https://web.example.com",
+		"AUTH_AUDIENCE":        "api",
+		"CORS_ALLOWED_ORIGINS": "https://web.example.com",
+		"DATABASE_URL":         "postgres://app:secret@db.example.com:5432/app?sslmode=require",
+	}
+	for name, override := range map[string]map[string]string{
+		"DB sslmode=disable":   {"DATABASE_URL": "postgres://app:secret@db.example.com/app?sslmode=disable"},
+		"DB sslmode=prefer":    {"DATABASE_URL": "postgres://app:secret@db.example.com/app?sslmode=prefer"},
+		"DB sslmode omitted":   {"DATABASE_URL": "postgres://app:secret@db.example.com/app"},
+		"CORS lists no origin": {"CORS_ALLOWED_ORIGINS": ","},
+		"CORS only whitespace": {"CORS_ALLOWED_ORIGINS": " , "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := map[string]string{}
+			for k, v := range base {
+				env[k] = v
+			}
+			for k, v := range override {
+				env[k] = v
+			}
+			if _, err := loadConfig(func(k string) string { return env[k] }); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+func TestLoadConfigDevelopmentAllowsPlainDatabase(t *testing.T) {
+	if _, err := loadConfig(func(string) string { return "" }); err != nil {
+		t.Fatalf("development defaults (sslmode=disable) rejected: %v", err)
 	}
 }
 
