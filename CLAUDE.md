@@ -3,9 +3,10 @@
 ## 概要
 Next.js と Better Auth、Go で認証を実装する。
 この API は Go で、Web(別リポジトリ `better-auth-multi-platform-web`)が発行した JWT を検証する。
-将来は Tauri(デスクトップ)と Expo(モバイル)からも、同じサービスに組み込む。
-認証は Next.js の Better Auth が担当する。クライアント(Web / Tauri / Expo)はそこでログインし、
-JWT を取得して Go の API を直接呼ぶ(Next.js はデータの中継をしない)。
+将来は Tauri(デスクトップ)と Expo(モバイル)からも、同じ Go のサービスを使う予定(おいおい実装する。今は Web のみ)。
+認証は Next.js の Better Auth が担当する。Web は Next.js のサーバー(BFF)経由で Go を呼ぶ。
+サーバーが、呼ぶたびに JWT を発行して付ける(`src/lib/api-server.ts` の `callApi`)。ブラウザには JWT を出さず、フォームも Server Action 経由にする。
+Go は JWT を検証するだけで、呼び出し元を区別しない。そのため、Tauri / Expo は、Better Auth でログインして JWT を取得し、Go を直接呼ぶ形で足せる(Go は変えずに済む)。
 ログイン方法はマジックリンクを必須とし、OAuth は任意で有効にできる。パスワードは使わない。
 
 ## 使用技術
@@ -41,7 +42,7 @@ JWT を取得して Go の API を直接呼ぶ(Next.js はデータの中継を�
 - `AUTH_ISSUER`: JWT の `iss`。Web の `BETTER_AUTH_URL` と同じにする(既定 `http://localhost:3000`)
 - `AUTH_AUDIENCE`: JWT の `aud`。Web の `JWT_AUDIENCE` と同じにする(既定 `better-auth-multi-platform-api`)
 - `AUTH_JWKS_URL`: 公開鍵の取得先(既定 `<AUTH_ISSUER>/api/auth/jwks`)。`https` のみ可(localhost / host.docker.internal だけ `http` 可)
-- `CORS_ALLOWED_ORIGINS`: ブラウザから直接呼ぶ Web のオリジン。カンマ区切り、完全一致(既定 `http://localhost:3000`)。本番(`APP_ENV=production`)では必須
+- `CORS_ALLOWED_ORIGINS`: ブラウザから Go を直接呼ぶ場合のオリジン。Web は BFF 経由なので、現状は使われない(設定は残してある)。カンマ区切り、完全一致(既定 `http://localhost:3000`)。本番(`APP_ENV=production`)では必須
 - `DATABASE_URL`: Postgres の接続文字列(パスワードを含む)。既定は `docker-compose.yml` の開発用 DB(ダミーの認証情報、`localhost:5432`)。本番では必須で、外部から注入する。本番では `sslmode=require` 以上でないと起動時にエラー(`prefer` や sslmode 省略も平文に落ちるので不可)
 
 ## 認証(JWT 検証)
