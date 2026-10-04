@@ -9,7 +9,8 @@ JWT を取得して Go の API を直接呼ぶ(Next.js はデータの中継を�
 ログイン方法はマジックリンクを必須とし、OAuth は任意で有効にできる。パスワードは使わない。
 
 ## 使用技術
-- Go 1.24(標準の `net/http`)
+- Go 1.27(標準の `net/http`。`go.mod` と Dockerfile のイメージに合わせる)
+- Postgres(接続は pgx。開発は `docker-compose.yml` の `db`)
 - Docker(本番は Fargate などのコンテナ基盤を想定)
 - Air(開発時のホットリロード)
 - Web とは JWT で連携(JWKS で署名を検証。Go はステートレス)
@@ -21,12 +22,13 @@ JWT を取得して Go の API を直接呼ぶ(Next.js はデータの中継を�
 - `go test ./...`: テスト
 
 ## 環境変数
-- `APP_ENV`: `development`(未設定も同じ)か `production`。それ以外の値は起動時にエラー。`production` にすると、`AUTH_ISSUER`・`AUTH_AUDIENCE`・`CORS_ALLOWED_ORIGINS` が必須になる(未設定なら起動時にエラー)
+- `APP_ENV`: `development`(未設定も同じ)か `production`。それ以外の値は起動時にエラー。`production` にすると、`AUTH_ISSUER`・`AUTH_AUDIENCE`・`CORS_ALLOWED_ORIGINS`・`DATABASE_URL` が必須になる(`CORS_ALLOWED_ORIGINS` はオリジンが 1 つ以上、`DATABASE_URL` は TLS 必須)(未設定なら起動時にエラー)
 - `PORT`: 待ち受けポート(既定 8080)
 - `AUTH_ISSUER`: JWT の `iss`。Web の `BETTER_AUTH_URL` と同じにする(既定 `http://localhost:3000`)
 - `AUTH_AUDIENCE`: JWT の `aud`。Web の `JWT_AUDIENCE` と同じにする(既定 `better-auth-multi-platform-api`)
 - `AUTH_JWKS_URL`: 公開鍵の取得先(既定 `<AUTH_ISSUER>/api/auth/jwks`)。`https` のみ可(localhost / host.docker.internal だけ `http` 可)
 - `CORS_ALLOWED_ORIGINS`: ブラウザから直接呼ぶ Web のオリジン。カンマ区切り、完全一致(既定 `http://localhost:3000`)。本番(`APP_ENV=production`)では必須
+- `DATABASE_URL`: Postgres の接続文字列(パスワードを含む)。既定は `docker-compose.yml` の開発用 DB(ダミーの認証情報、`localhost:5432`)。本番では必須で、外部から注入する。本番では `sslmode=require` 以上でないと起動時にエラー(`prefer` や sslmode 省略も平文に落ちるので不可)
 
 ## 認証(JWT 検証)
 - `internal/auth`: JWT の検証本体(jwx v3)。EdDSA のみ許可し、`iss`・`aud`・`exp`・`sub` を検証する。JWKS はキャッシュし、未知の `kid` のときだけ(15 秒に 1 回まで)再取得する。同時に来たリクエストは 1 回の取得を待って結果を共有する(singleflight)

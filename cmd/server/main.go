@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shu915/better-auth-multi-platform-api/internal/auth"
+	"github.com/shu915/better-auth-multi-platform-api/internal/db"
 	"github.com/shu915/better-auth-multi-platform-api/internal/middleware"
 )
 
@@ -53,6 +54,7 @@ type config struct {
 	Port        string
 	Auth        auth.Config
 	CORSOrigins []string
+	DatabaseURL string
 }
 
 // loadConfig reads the environment. With APP_ENV=production the settings that
@@ -76,10 +78,20 @@ func loadConfig(env func(string) string) (config, error) {
 		return config{}, fmt.Errorf("PORT must be a number from 1 to 65535, got %q", port)
 	}
 	if appEnv == "production" {
-		for _, key := range []string{"AUTH_ISSUER", "AUTH_AUDIENCE", "CORS_ALLOWED_ORIGINS"} {
+		for _, key := range []string{"AUTH_ISSUER", "AUTH_AUDIENCE", "CORS_ALLOWED_ORIGINS", "DATABASE_URL"} {
 			if env(key) == "" {
 				return config{}, fmt.Errorf("%s is required when APP_ENV=production", key)
 			}
+		}
+	}
+	corsOrigins := middleware.ParseOrigins(get("CORS_ALLOWED_ORIGINS", "http://localhost:3000"))
+	databaseURL := get("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/app?sslmode=disable")
+	if appEnv == "production" {
+		if len(corsOrigins) == 0 { // e.g. "," passes the non-empty check above but allows no origin
+			return config{}, errors.New("CORS_ALLOWED_ORIGINS must list at least one origin")
+		}
+		if err := db.RequireTLS(databaseURL); err != nil {
+			return config{}, err
 		}
 	}
 	issuer := get("AUTH_ISSUER", "http://localhost:3000")
@@ -90,7 +102,9 @@ func loadConfig(env func(string) string) (config, error) {
 			Audience: get("AUTH_AUDIENCE", "better-auth-multi-platform-api"),
 			JWKSURL:  get("AUTH_JWKS_URL", issuer+"/api/auth/jwks"),
 		},
-		CORSOrigins: middleware.ParseOrigins(get("CORS_ALLOWED_ORIGINS", "http://localhost:3000")),
+		CORSOrigins: corsOrigins,
+		// The default is the dummy credentials of the dev DB in docker-compose.yml, reachable from a host-run server.
+		DatabaseURL: databaseURL,
 	}, nil
 }
 
@@ -108,6 +122,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
 	verifier, err := auth.NewVerifier(ctx, cfg.Auth)
 	if err != nil {
 		return err

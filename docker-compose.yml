@@ -12,3 +12,29 @@ services:
       AUTH_ISSUER: "http://localhost:3000"
       # Inside the container, localhost is the container itself; reach the host instead.
       AUTH_JWKS_URL: "http://host.docker.internal:3000/api/auth/jwks"
+      # Inside the compose network the DB is reachable by its service name.
+      DATABASE_URL: "postgres://postgres:postgres@db:5432/app?sslmode=disable"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+    ports:
+      # Exposed so a host-run server (air) can connect via localhost:5432; bound to loopback
+      # because the dev password is a known dummy.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db-data:
