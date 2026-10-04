@@ -20,6 +20,20 @@ JWT を取得して Go の API を直接呼ぶ(Next.js はデータの中継を�
 - `docker compose up --build`: Docker で起動
 - `go build -o bin/server ./cmd/server`: ビルド
 - `go test ./...`: テスト
+- マイグレーション(goose を `go tool` で実行。SQL は `migrations/`。先に `docker compose up -d db`):
+  - 接続先は環境変数で渡す(URL をコマンドライン引数に載せると、`ps` やシェル履歴に残るため)。
+    `export GOOSE_DRIVER=postgres GOOSE_DBSTRING="postgres://postgres:postgres@localhost:5432/app?sslmode=disable"`(開発用のダミーの値)
+  - `go tool goose -dir migrations create <name> sql -s`: 新しいマイグレーションの雛形を作る(`-s` で連番)
+  - `go tool goose -dir migrations up`: 未適用分を適用する
+  - `go tool goose -dir migrations status` / `down`: 状態の確認 / 1 つ戻す(開発だけ)
+  - スキーマを最初から作り直すときは、`docker compose down -v` で DB のボリュームを消す
+  - **本番**:
+    - アプリの起動時ではなく、デプロイ手順の中で 1 回だけ実行する(複数タスクの同時起動で衝突させないため)
+    - `GOOSE_DBSTRING` は、`sslmode=require` 以上の URL を渡す(goose にはアプリの TLS 検証がない)
+    - `down` は使わない(`DROP TABLE` でデータが消える。前に進める方向だけ。戻したいときは、新しいマイグレーションを足す)
+    - マイグレーション用(DDL)とアプリ実行用(SELECT / INSERT / UPDATE / DELETE のみ)の DB ユーザーは分けるのが望ましい(次のステップで検討)
+  - `updated_at` は自動では更新されない。`UPDATE` のたびに `updated_at = now()` を入れる
+  - 別 DB のユーザーを指す列(`user_id`)に外部キーはない。ユーザー削除との同期は、いずれ決める
 
 ## 環境変数
 - `APP_ENV`: `development`(未設定も同じ)か `production`。それ以外の値は起動時にエラー。`production` にすると、`AUTH_ISSUER`・`AUTH_AUDIENCE`・`CORS_ALLOWED_ORIGINS`・`DATABASE_URL` が必須になる(`CORS_ALLOWED_ORIGINS` はオリジンが 1 つ以上、`DATABASE_URL` は TLS 必須)(未設定なら起動時にエラー)
