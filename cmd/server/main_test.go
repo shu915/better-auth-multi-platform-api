@@ -24,7 +24,7 @@ func passThrough(next http.Handler) http.Handler { return next }
 
 func TestHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
-	newMux(passThrough).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	newMux(passThrough, fakeProfiles{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -39,7 +39,7 @@ func TestHealth(t *testing.T) {
 
 func TestHealthRejectsPost(t *testing.T) {
 	rec := httptest.NewRecorder()
-	newMux(passThrough).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
+	newMux(passThrough, fakeProfiles{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/health", nil))
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
@@ -48,7 +48,7 @@ func TestHealthRejectsPost(t *testing.T) {
 
 // These go through the real middleware chain to prove /me is actually protected.
 func TestMeRequiresAuth(t *testing.T) {
-	h := handler(fakeVerifier{}, testOrigins)
+	h := handler(fakeVerifier{}, testOrigins, fakeProfiles{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/me", nil))
@@ -78,7 +78,7 @@ func TestMeRequiresAuth(t *testing.T) {
 
 func TestHealthNeedsNoAuth(t *testing.T) {
 	rec := httptest.NewRecorder()
-	handler(fakeVerifier{}, testOrigins).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	handler(fakeVerifier{}, testOrigins, fakeProfiles{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -89,7 +89,7 @@ func TestPreflightToProtectedRouteSucceeds(t *testing.T) {
 	req.Header.Set("Origin", "http://localhost:3000")
 	req.Header.Set("Access-Control-Request-Method", "GET")
 	rec := httptest.NewRecorder()
-	handler(fakeVerifier{}, testOrigins).ServeHTTP(rec, req)
+	handler(fakeVerifier{}, testOrigins, fakeProfiles{}).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("preflight status = %d, want 204 (it carries no credentials)", rec.Code)
 	}
