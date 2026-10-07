@@ -27,7 +27,7 @@ func main() {
 
 // newMux builds the routes. authn wraps the endpoints that require a signed-in user;
 // those return personal data, so their responses (including 401s) are also marked no-store.
-func newMux(authn func(http.Handler) http.Handler, profiles profileGetter) *http.ServeMux {
+func newMux(authn func(http.Handler) http.Handler, profiles profileStore) *http.ServeMux {
 	protect := func(h http.Handler) http.Handler { return middleware.NoStore(authn(h)) }
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +42,7 @@ func newMux(authn func(http.Handler) http.Handler, profiles profileGetter) *http
 		writeJSON(w, http.StatusOK, map[string]string{"user_id": userID})
 	})))
 	mux.Handle("GET /me/profile", protect(getProfile(profiles)))
+	mux.Handle("PUT /me/profile", protect(putProfile(profiles)))
 	return mux
 }
 
@@ -113,7 +114,7 @@ func loadConfig(env func(string) string) (config, error) {
 }
 
 // handler wires the middleware chain: CORS outermost so preflights and 401s carry CORS headers.
-func handler(verifier middleware.TokenVerifier, corsOrigins []string, profiles profileGetter) http.Handler {
+func handler(verifier middleware.TokenVerifier, corsOrigins []string, profiles profileStore) http.Handler {
 	return middleware.CORS(corsOrigins)(newMux(middleware.Authenticate(verifier), profiles))
 }
 

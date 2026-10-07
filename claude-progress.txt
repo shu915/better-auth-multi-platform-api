@@ -1,0 +1,42 @@
+claude-progress.txt (api)
+最終更新: 2026-10-07
+新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
+
+## 完了したタスク
+- hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの gofmt、応答終了時の gofmt・vet・build・test。evaluator はレビューと改ざん確認だけ担当
+- JWT の検証(EdDSA のみ、JWKS をキャッシュ、issuer と audience を検証)
+- 公開鍵を取れないときは 503(401 にしない)
+- CORS、no-store、GET /health、GET /me
+- profiles テーブルのマイグレーション(goose)
+- GET /me/profile と PUT /me/profile(user_id はトークンの sub だけから取る)
+  - bio は最大 1000 文字、NUL と不正な UTF-8 は 422、本体は 16KB まで(超えると 413)
+  - エラーの JSON 形式は middleware.WriteError に一本化
+- Web の画面から PUT /me/profile までの手動確認(人間が実施済み)
+- テスト(DB を使うテストは TEST_DATABASE_URL がないと SKIP)
+- evaluator エージェント(.claude/agents/evaluator.md)と、実装後のループ運用(CLAUDE.md)
+
+## 実行中のタスク
+- PUT /me/profile の PR を出す(web のプロフィール編集より先にマージする)
+
+## これからのタスク(順番)
+1. Web 側の OAuth の有効化に合わせて、必要なら確認する(Go は JWT を検証するだけなので、変更は不要の見込み)
+2. 1 回デプロイする(Fargate などを想定)
+   - マイグレーションはデプロイ手順の中で 1 回だけ実行する(起動時にはしない)
+   - 下の「未対応のレビュー指摘」を先に決める
+3. タグを付ける
+4. Tauri と Expo は、Go を変えずに足せる(CORS のオリジンの追加が要るかもしれない)
+
+## 未対応のレビュー指摘(デプロイ前に決める)
+- DB クエリに期限がない: http.TimeoutHandler、プールの MaxConns と statement_timeout を入れる
+- Neon の pooled URL(PgBouncer)を使う場合、pgx のプリペアドステートメントでエラーになる可能性がある。QueryExecMode を確認する
+- 本番で AUTH_JWKS_URL の http://localhost を許してしまう。本番は https のみにする
+- panic を拾う Recover ミドルウェアがない
+- レート制限がない(ALB と WAF で行う案)
+- DB の TLS は sslmode=require だとサーバー証明書を検証しない。verify-full を検討する
+- 複数端末からの更新は後勝ち(必要になったら If-Match などの楽観ロック)
+- トークンの失効と削除済みユーザー(JWT は最大 5 分有効。ユーザー削除との同期は未決)
+
+## PR に含める変更(feature/profile-update-api)
+- PUT /me/profile の追加と、そのテスト
+- WriteError の共通化、UTF-8 の検証の追加
+- evaluator.md、CLAUDE.md の更新
