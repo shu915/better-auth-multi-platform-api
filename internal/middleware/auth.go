@@ -3,6 +3,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -53,7 +54,7 @@ func Authenticate(v TokenVerifier) func(http.Handler) http.Handler {
 				if skipped, ok := unavailableLog.allow(); ok {
 					log.Printf("auth: cannot verify token (%d similar errors suppressed): %v", skipped, err)
 				}
-				writeError(w, http.StatusServiceUnavailable, "service unavailable")
+				WriteError(w, http.StatusServiceUnavailable, "service unavailable")
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userIDKey{}, userID)))
@@ -63,13 +64,15 @@ func Authenticate(v TokenVerifier) func(http.Handler) http.Handler {
 
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	writeError(w, http.StatusUnauthorized, "unauthorized")
+	WriteError(w, http.StatusUnauthorized, "unauthorized")
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
+// WriteError writes {"error": msg} with the given status. It is the one JSON error shape
+// shared by the middleware and the handlers.
+func WriteError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if _, err := w.Write([]byte(`{"error":"` + msg + `"}` + "\n")); err != nil {
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
 		log.Printf("write error response: %v", err)
 	}
 }

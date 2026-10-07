@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 
@@ -10,8 +12,19 @@ import (
 	"github.com/shu915/better-auth-multi-platform-api/internal/profile"
 )
 
-type profileGetter interface {
+type profileStore interface {
 	Get(ctx context.Context, userID string) (profile.Profile, error)
+	Upsert(ctx context.Context, userID, bio string) (profile.Profile, error)
+}
+
+// maxProfileBody caps the request body: a bio is at most 1000 characters (4 bytes each in UTF-8,
+// more when escaped as JSON), so this is generous but still bounded.
+const maxProfileBody = 16 << 10
+
+var errTrailingData = errors.New("trailing data after JSON object")
+
+type updateProfileRequest struct {
+	Bio *string `json:"bio"` // a pointer, so a missing field is not mistaken for an empty bio
 }
 
 type profileResponse struct {
@@ -21,7 +34,7 @@ type profileResponse struct {
 
 // getProfile returns the caller's own profile. The user id comes only from the verified
 // token, never from the request, so one user cannot read another's profile.
-func getProfile(store profileGetter) http.Handler {
+func getProfile(store profileStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := middleware.UserID(r.Context())
 		if !ok { // authn did not run: a wiring bug, never trust the request
@@ -41,6 +54,53 @@ func getProfile(store profileGetter) http.Handler {
 	})
 }
 
+// putProfile replaces the caller's own bio. Like getProfile, the user id comes only from the
+// verified token. It is idempotent: the same body always leaves the same profile.
+func putProfile(store profileStore) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := middleware.UserID(r.Context())
+		if !ok { // authn did not run: a wiring bug, never trust the request
+			internalError(w)
+			return
+		}
+		var req updateProfileRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxProfileBody))
+		dec.DisallowUnknownFields()
+		err := dec.Decode(&req)
+		if err == nil { // anything after the object is invalid
+			if err = dec.Decode(&struct{}{}); errors.Is(err, io.EOF) {
+				err = nil
+			} else if err == nil {
+				err = errTrailingData
+			}
+		}
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				middleware.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
+			middleware.WriteError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		if req.Bio == nil {
+			middleware.WriteError(w, http.StatusBadRequest, "bio is required")
+			return
+		}
+		p, err := store.Upsert(r.Context(), userID, *req.Bio)
+		switch {
+		case errors.Is(err, profile.ErrInvalidBio):
+			middleware.WriteError(w, http.StatusUnprocessableEntity, "invalid bio")
+			return
+		case err != nil:
+			log.Printf("put profile: %v", err)
+			internalError(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, profileResponse{UserID: p.UserID, Bio: p.Bio})
+	})
+}
+
 func internalError(w http.ResponseWriter) {
-	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	middleware.WriteError(w, http.StatusInternalServerError, "internal error")
 }
