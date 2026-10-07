@@ -5,7 +5,7 @@ Next.js と Better Auth、Go で認証を実装する。
 この API は Go で、Web(別リポジトリ `better-auth-multi-platform-web`)が発行した JWT を検証する。
 将来は Tauri(デスクトップ)と Expo(モバイル)からも、同じ Go のサービスを使う予定(おいおい実装する。今は Web のみ)。
 認証は Next.js の Better Auth が担当する。Web は Next.js のサーバー(BFF)経由で Go を呼ぶ。
-サーバーが、呼ぶたびに JWT を発行して付ける(`src/lib/api-server.ts` の `callApi`)。ブラウザには JWT を出さず、フォームも Server Action 経由にする。
+Web 側のサーバーが、呼ぶたびに JWT を発行して付ける(Web リポジトリの `src/lib/api-server.ts` の `callApi`)。ブラウザには JWT を出さず、フォームも Server Action 経由にする。
 Go は JWT を検証するだけで、呼び出し元を区別しない。そのため、Tauri / Expo は、Better Auth でログインして JWT を取得し、Go を直接呼ぶ形で足せる(Go は変えずに済む)。
 ログイン方法はマジックリンクを必須とし、OAuth は任意で有効にできる。パスワードは使わない。
 
@@ -20,8 +20,8 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - `air`: 開発サーバー(localhost:8080、保存で自動再起動)
 - `docker compose up --build`: Docker で起動
 - `go build -o bin/server ./cmd/server`: ビルド
-- `go test ./...`: テスト
-- マイグレーション(goose を `go tool` で実行。SQL は `migrations/`。先に `docker compose up -d db`):
+- `gofmt -l .` / `go vet ./...` / `go test ./...`: 整形の確認 / 静的解析 / テスト(Claude Code では hooks が自動実行する)
+- マイグレーション(人が手で実行する。Claude Code では hooks が `up` / `down` などをブロックする。goose を `go tool` で実行。SQL は `migrations/`。先に `docker compose up -d db`):
   - 接続先は環境変数で渡す(URL をコマンドライン引数に載せると、`ps` やシェル履歴に残るため)。
     `export GOOSE_DRIVER=postgres GOOSE_DBSTRING="postgres://postgres:postgres@localhost:5432/app?sslmode=disable"`(開発用のダミーの値)
   - `go tool goose -dir migrations create <name> sql -s`: 新しいマイグレーションの雛形を作る(`-s` で連番)
@@ -58,3 +58,38 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - ロジックは `internal/` に置き、`net/http` に依存させない
 - ハンドラは薄く保つ(リクエストを読む → ロジックを呼ぶ → レスポンスを返す)
 - ミドルウェアは `func(http.Handler) http.Handler` の形で書く
+
+## 実装後の流れ(生成と評価のループ)
+実装は自分(ジェネレーター)、評価は `evaluator` エージェント(`.claude/agents/evaluator.md`)が行う。
+1. 実装する。`gofmt -l .`・`go vet ./...`・`go build ./...`・`go test ./...` は hooks(`.claude/settings.json`)が自動で実行する(編集ごとに gofmt、応答終了時に全体)。失敗したら差し戻されるので直す
+2. `evaluator` を呼ぶ(レビューと改ざん確認担当。挙動を変える変更のとき。ドキュメントやコメントだけの変更では呼ばない)
+3. 判定が「要修正」なら、「高」「中」の指摘を直して 2 に戻る。ただし最大 5 周まで(これは打ち切りの上限で、普通はもっと少ない周回で終わる)
+4. 「合格」になったら終了し、結果を報告する。5 周で合格しなければ、止めて残っている指摘をそのまま報告する(無理に通さない)。同じ指摘が再発したときは、上限を待たずに止めて報告する
+5. 報告には、SKIP されたテスト(例: `TEST_DATABASE_URL` 未設定の DB テスト)と、未検証の項目を必ず書く
+
+### 人間の確認はループの外
+- 実際の API の動作確認(curl での確認など)、DB を使った手動テスト、最終レビューは人間の作業。ループの終了条件に含めない
+- ループが終わる条件は「検証がすべて通り、evaluator が合格」(または最大 5 周で打ち切り)だけ
+- 終了時の報告に、人間向けの確認手順と、AI が検証していない範囲(SKIP された DB テストなど)を書く。人間の返事は待たない
+- 人間が問題を見つけたら、その内容を起点に新しい goal として回す
+- goal を書くときは、完了条件(AI がループ内で満たす。機械で確認できるものだけ)と、ループの外(人間の作業)の節を分ける
+
+### テストを通すための改ざんは禁止
+合格させるために、次をしてはいけない。やむを得ず変えるときは、理由を報告に書き、人間の確認を待つ。
+- 失敗するテストの削除、`t.Skip` の追加、`-run` や build タグで外すこと
+- 期待値やアサーションを、実装の出力に合わせて弱める・書き換えること(仕様が変わった場合を除く)
+- 検証用の値(上限値、タイムアウト、許可リストなど)を、通るように緩めること
+- `evaluator` の指摘を、直さずにコメントや設定で黙らせること
+テストが落ちたら、まず実装が間違っていると考える。テストの側が間違っていると判断するときも、その根拠を書く。
+
+### コミットとマイグレーション
+- 人が頼むまでコミットしない(変更は未コミットで残し、先に読んでもらう)
+- `goose up` などマイグレーションは実行しない(手順を案内するだけにする)
+
+### hooks が強制していること(`.claude/hooks/`)
+- PreToolUse でブロック: `.env` 系の読み取り(`.env.example` は可)、`git commit/push/clean/reset --hard`、`rm -r`、`goose up/down/reset/redo`、既存 `migrations/` の編集、`go.sum`・`.github/workflows/` の編集、`_test.go` への `t.Skip` の追加
+- ブロックされたら回避せず、理由を報告して人の指示を待つ
+
+## 進捗ファイル
+- `claude-progress.txt` に、完了・実行中・これからのタスクを書く。新しいセッションは、最初にこのファイルと CLAUDE.md を読む
+- goal が終わるたびに(ループの終了時の報告と一緒に)更新する。長いセッションで文脈が劣化しても、続きから始められるようにするため
