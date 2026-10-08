@@ -28,6 +28,11 @@ run() { # run <name> <cmd...>
 run fmt gofmt -l .
 run vet go vet ./...
 run build go build ./...
+# 開発用 DB(docker compose の db)が起動していれば、DB を使うテストも動かす。
+# 未起動なら今までどおり SKIP になる(SKIP 数は下で報告する)。別の DB を使うときは TEST_DATABASE_URL を先に設定する
+if [[ -z "${TEST_DATABASE_URL:-}" ]] && (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+  export TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/app?sslmode=disable" # 開発用のダミーの値
+fi
 run test go test -v ./...
 
 if [[ -z "$fails" ]]; then

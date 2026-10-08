@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/shu915/better-auth-multi-platform-api/internal/auth"
+	"github.com/shu915/better-auth-multi-platform-api/internal/profile"
 )
 
 var testOrigins = []string{"http://localhost:3000"}
@@ -145,6 +146,8 @@ func TestLoadConfigProductionRejectsUnsafeValues(t *testing.T) {
 		"DB sslmode=disable":   {"DATABASE_URL": "postgres://app:secret@db.example.com/app?sslmode=disable"},
 		"DB sslmode=prefer":    {"DATABASE_URL": "postgres://app:secret@db.example.com/app?sslmode=prefer"},
 		"DB sslmode omitted":   {"DATABASE_URL": "postgres://app:secret@db.example.com/app"},
+		"JWKS over http":       {"AUTH_JWKS_URL": "http://localhost:3000/api/auth/jwks"},
+		"issuer over http":     {"AUTH_ISSUER": "http://web.example.com"},
 		"CORS lists no origin": {"CORS_ALLOWED_ORIGINS": ","},
 		"CORS only whitespace": {"CORS_ALLOWED_ORIGINS": " , "},
 	} {
@@ -183,5 +186,39 @@ func TestLoadConfigRejectsBadValues(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 		})
+	}
+}
+
+// panickyProfiles panics on Get, and notes whether the request carried a deadline.
+type panickyProfiles struct {
+	fakeProfiles
+	sawDeadline *bool
+}
+
+func (p panickyProfiles) Get(ctx context.Context, _ string) (profile.Profile, error) {
+	_, ok := ctx.Deadline()
+	*p.sawDeadline = ok
+	panic("store exploded")
+}
+
+func TestHandlerRecoversFromAPanicAndGivesRequestsADeadline(t *testing.T) {
+	var sawDeadline bool
+	store := panickyProfiles{sawDeadline: &sawDeadline}
+
+	rec := getProfileAs(t, store.fakeProfiles, "good", "/me/profile") // sanity: the plain fake works
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sanity: status = %d", rec.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/me/profile", nil)
+	req.Header.Set("Authorization", "Bearer good")
+	rec = httptest.NewRecorder()
+	handler(fakeVerifier{}, testOrigins, store).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("panic in the store: status = %d, want 500", rec.Code)
+	}
+	if !sawDeadline {
+		t.Error("the request context given to the store has no deadline")
 	}
 }

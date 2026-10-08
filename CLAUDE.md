@@ -41,7 +41,7 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - `PORT`: 待ち受けポート(既定 8080)
 - `AUTH_ISSUER`: JWT の `iss`。Web の `BETTER_AUTH_URL` と同じにする(既定 `http://localhost:3000`)
 - `AUTH_AUDIENCE`: JWT の `aud`。Web の `JWT_AUDIENCE` と同じにする(既定 `better-auth-multi-platform-api`)
-- `AUTH_JWKS_URL`: 公開鍵の取得先(既定 `<AUTH_ISSUER>/api/auth/jwks`)。`https` のみ可(localhost / host.docker.internal だけ `http` 可)
+- `AUTH_JWKS_URL`: 公開鍵の取得先(既定 `<AUTH_ISSUER>/api/auth/jwks`)。`https` のみ可(localhost / host.docker.internal だけ `http` 可)。`APP_ENV=production` では、localhost を含めて `https` のみ(起動時にエラー)
 - `CORS_ALLOWED_ORIGINS`: ブラウザから Go を直接呼ぶ場合のオリジン。Web は BFF 経由なので、現状は使われない(設定は残してある)。カンマ区切り、完全一致(既定 `http://localhost:3000`)。本番(`APP_ENV=production`)では必須
 - `DATABASE_URL`: Postgres の接続文字列(パスワードを含む)。既定は `docker-compose.yml` の開発用 DB(ダミーの認証情報、`localhost:5432`)。本番では必須で、外部から注入する。本番では `sslmode=require` 以上でないと起動時にエラー(`prefer` や sslmode 省略も平文に落ちるので不可)
 
@@ -49,6 +49,9 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - `internal/auth`: JWT の検証本体(jwx v3)。EdDSA のみ許可し、`iss`・`aud`・`exp`・`sub` を検証する。JWKS はキャッシュし、未知の `kid` のときだけ(15 秒に 1 回まで)再取得する。同時に来たリクエストは 1 回の取得を待って結果を共有する(singleflight)
 - `internal/middleware`: `Authorization: Bearer` を取り出して検証し、ユーザー ID を `context` に入れる(`middleware.UserID`)
 - 公開鍵を取得できないときは 401 ではなく 503 を返す(トークンの問題ではないため)。`auth.ErrInvalidToken` だけが 401
+- `internal/middleware/recover.go`: handler の panic を 500 にする(最外側)。ログには panic の値だけを出し、リクエスト(トークンを含みうる)は出さない
+- `internal/middleware/timeout.go`: 1 リクエストに 10 秒の期限を付ける(`requestTimeout`)。DB のクエリに効く。JWKS の再取得は、リクエストの期限とは別に自前の 3 秒で切れる
+- `internal/db`: プールは最大 10 接続、`statement_timeout` は 5 秒(`db.MaxConns`、`db.StatementTimeout`)
 - `internal/middleware/cors.go`: 認証ミドルウェアの外側に置く(プリフライトと 401 にも CORS ヘッダーを付けるため)
 - 保護するルートは `newMux` の `authn(...)` で包む(例: `GET /me`)
 
@@ -63,6 +66,11 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - 退会後も、発行済みの JWT は最大 5 分有効。その間に別の端末から `PUT /me/profile` が来ると、`profiles` の行が作り直される(孤児データ)。今は許容している(墓標のテーブルで防ぐ案はあるが、重いので見送り)
   - Web の退会フローを作るときの順番: 先に Better Auth のセッションを全部失効させる(新しい JWT が出なくなる)→ `DELETE /me` → Better Auth のユーザーを削除する。これで、復活する窓はほぼ、すでに発行済みの JWT の残り(最大 5 分)だけになる
 - `DELETE /me` が消すのは、この API のデータだけ。アカウント本体(Better Auth のユーザー)は Web の DB にあり、Web が消す
+
+## テスト
+- DB を使うテストは、`TEST_DATABASE_URL` がないと SKIP される。Stop hook は、開発用 DB(`docker compose up -d db`)が起動していれば、自動でこの変数を渡す。CI にも Postgres を入れる(`.github/workflows/ci.yml`)
+- `cmd/server/integration_test.go`: 結合テスト。HTTP のハンドラ、本物の JWT 検証(テスト用の鍵と JWKS サーバー)、本物のストア、本物の Postgres を通す。確かめること: PUT → GET → DELETE の一本道、DELETE の冪等性、他のユーザーに影響しない、`user_id` はトークンの `sub` だけから取る(クエリやボディで他人を指せない)、不正なトークンでは何も変わらない、bio の規則(1000 文字、NUL)が実 DB で効く
+- DB が要るテストは `internal/testdb` の `Pool(t)` を使う(未設定なら SKIP)
 
 ## 設計方針
 将来 Echo などへ切り替える可能性がある。次を守る。
@@ -95,11 +103,11 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 テストが落ちたら、まず実装が間違っていると考える。テストの側が間違っていると判断するときも、その根拠を書く。
 
 ### コミットとマイグレーション
-- 人が頼むまでコミットしない(変更は未コミットで残し、先に読んでもらう)
+- 人が頼むまでコミットしない(変更は未コミットで残し、先に読んでもらう)。hook はコミットを止めない(運用で守る)。push は hook が止めるので、人が実行する。`.github/workflows/` の編集は hook では止めない。CI を緩める変更(テストの削除、SKIP を許す、など)は、改ざんとして扱い、PR の差分で見る
 - `goose up` などマイグレーションは実行しない(手順を案内するだけにする)
 
 ### hooks が強制していること(`.claude/hooks/`)
-- PreToolUse でブロック: `.env` 系の読み取り(`.env.example` は可)、`git commit/push/clean/reset --hard`、`rm -r`、`goose up/down/reset/redo`、既存 `migrations/` の編集、`go.sum`・`.github/workflows/` の編集、`_test.go` への `t.Skip` の追加
+- PreToolUse でブロック: `.env` 系の読み取り(`.env.example` は可)、`git push/clean/reset --hard`(`git commit` はローカルで取り消せるのでブロックしない。コミットは頼まれたときだけ、という運用は変えない)、`rm -r`、`goose up/down/reset/redo`、既存 `migrations/` の編集、`go.sum` の編集、`_test.go` への `t.Skip` の追加
 - ブロックされたら回避せず、理由を報告して人の指示を待つ
 
 ## 進捗ファイル

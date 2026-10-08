@@ -5,10 +5,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	// MaxConns caps the pool. Several tasks share one database, so stay well under its limit.
+	MaxConns = 10
+	// StatementTimeout is how long Postgres lets one statement run before cancelling it.
+	StatementTimeout = 5 * time.Second
 )
 
 // RequireTLS rejects a URL that would let the connection fall back to plaintext:
@@ -29,9 +37,17 @@ func RequireTLS(databaseURL string) error {
 // Open connects to Postgres and verifies the connection, so a wrong URL or an unreachable
 // database fails at startup instead of on the first request. The caller must Close the pool.
 func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		// pgx's parse errors can echo the URL; report only that it is invalid, never the password.
+		return nil, fmt.Errorf("invalid DATABASE_URL")
+	}
+	// Bounds, so a slow query or a burst of requests cannot exhaust the database: a cap on
+	// connections and a server-side limit on how long one statement may run.
+	cfg.MaxConns = MaxConns
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.Itoa(int(StatementTimeout / time.Millisecond))
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
 		return nil, fmt.Errorf("invalid DATABASE_URL")
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
