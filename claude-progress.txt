@@ -19,6 +19,8 @@ claude-progress.txt (api)
   - 検証: gofmt・vet・build・test が通過。TEST_DATABASE_URL を設定して SKIP 0 件。壊すと落ちることを確認済み(WHERE なしの DELETE、ルートの削除、クエリの user_id を使う、宣言のないテーブル)
   - 既知の限界: 退会後も JWT は最大 5 分有効で、その間の PUT /me/profile が行を作り直す。許容している
 
+- 結合テスト(chore/tests-and-leftovers): cmd/server/integration_test.go(5 件)と internal/testdb。実 JWT 検証 + 実ストア + 実 Postgres を通す。実装を壊すと落ちることを確認済み(DELETE が消さない、GET が ?user_id を信用する、未知のフィールドを許す)。Stop hook は、開発 DB が起動していれば TEST_DATABASE_URL を自動で渡す。CI への Postgres 追加は、.github/workflows が hook で保護されているため、人の作業(差分は報告済み)
+
 ## 実行中のタスク
 - feat/account-deletion の PR のレビュー待ち(人間の作業)
 - Web 側の退会は実装済みで、実機での手動確認も済んだ(Web の PR は別リポジトリ)。確認したこと: 退会が通る、5 分超のセッションは断られて何も消えない、Go 停止中は失敗してユーザーが残る、bio を保存したユーザーの退会で profiles の行が消える、退会した Google ではログインできない、同じメールで新規ユーザーになる

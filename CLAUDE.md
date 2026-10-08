@@ -64,6 +64,11 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
   - Web の退会フローを作るときの順番: 先に Better Auth のセッションを全部失効させる(新しい JWT が出なくなる)→ `DELETE /me` → Better Auth のユーザーを削除する。これで、復活する窓はほぼ、すでに発行済みの JWT の残り(最大 5 分)だけになる
 - `DELETE /me` が消すのは、この API のデータだけ。アカウント本体(Better Auth のユーザー)は Web の DB にあり、Web が消す
 
+## テスト
+- DB を使うテストは、`TEST_DATABASE_URL` がないと SKIP される。Stop hook は、開発用 DB(`docker compose up -d db`)が起動していれば、自動でこの変数を渡す。CI にも Postgres を入れる(`.github/workflows/ci.yml`)
+- `cmd/server/integration_test.go`: 結合テスト。HTTP のハンドラ、本物の JWT 検証(テスト用の鍵と JWKS サーバー)、本物のストア、本物の Postgres を通す。確かめること: PUT → GET → DELETE の一本道、DELETE の冪等性、他のユーザーに影響しない、`user_id` はトークンの `sub` だけから取る(クエリやボディで他人を指せない)、不正なトークンでは何も変わらない、bio の規則(1000 文字、NUL)が実 DB で効く
+- DB が要るテストは `internal/testdb` の `Pool(t)` を使う(未設定なら SKIP)
+
 ## 設計方針
 将来 Echo などへ切り替える可能性がある。次を守る。
 - HTTP は標準の `net/http` のみ。外部のルーター/フレームワークを追加しない
