@@ -116,3 +116,35 @@ func TestUpsertRejectsInvalidBio(t *testing.T) {
 		t.Errorf("max length bio (in characters) rejected: %v", err)
 	}
 }
+
+func TestDelete(t *testing.T) {
+	s, ctx := newTestStore(t)
+	const userID, otherID = "test-user-delete", "test-user-delete-other"
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = ANY($1)`, []string{userID, otherID})
+	})
+	if _, err := s.Upsert(ctx, userID, "mine"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Upsert(ctx, otherID, "theirs"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Delete(ctx, userID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.Get(ctx, userID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after delete: err = %v, want ErrNotFound", err)
+	}
+	// deleting again, or a user who never had a row, is not an error (the web app retries)
+	if err := s.Delete(ctx, userID); err != nil {
+		t.Errorf("second delete: %v", err)
+	}
+	if err := s.Delete(ctx, "test-user-never-existed"); err != nil {
+		t.Errorf("delete without a row: %v", err)
+	}
+	// only the caller's row goes
+	if got, err := s.Get(ctx, otherID); err != nil || got.Bio != "theirs" {
+		t.Errorf("another user's profile: got %+v, err %v", got, err)
+	}
+}

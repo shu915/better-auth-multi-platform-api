@@ -14,10 +14,22 @@ import (
 
 // fakeProfiles answers from a map, records the user id it was asked for, and can fail on demand.
 type fakeProfiles struct {
-	byUser map[string]profile.Profile
-	err    error
-	asked  *[]string
-	puts   *[]profile.Profile // what Upsert was called with
+	byUser  map[string]profile.Profile
+	err     error
+	asked   *[]string
+	puts    *[]profile.Profile // what Upsert was called with
+	deletes *[]string          // the user ids Delete was called with
+}
+
+func (f fakeProfiles) Delete(_ context.Context, userID string) error {
+	if f.deletes != nil {
+		*f.deletes = append(*f.deletes, userID)
+	}
+	if f.err != nil {
+		return f.err
+	}
+	delete(f.byUser, userID) // like the real store, a missing row is fine
+	return nil
 }
 
 func (f fakeProfiles) Upsert(_ context.Context, userID, bio string) (profile.Profile, error) {
@@ -253,5 +265,97 @@ func TestPutProfileStoreErrorIsHiddenFromClient(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "db.internal") {
 		t.Errorf("internal error text leaked to the client: %q", rec.Body.String())
+	}
+}
+
+func deleteMeAs(t *testing.T, store fakeProfiles, token, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, target, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	handler(fakeVerifier{}, testOrigins, store).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestDeleteMeRequiresAuth(t *testing.T) {
+	var deletes []string
+	store := fakeProfiles{deletes: &deletes}
+	for _, token := range []string{"", "forged"} {
+		if rec := deleteMeAs(t, store, token, "/me"); rec.Code != http.StatusUnauthorized {
+			t.Errorf("token %q: status = %d, want 401", token, rec.Code)
+		}
+	}
+	if len(deletes) != 0 {
+		t.Errorf("an unauthenticated request deleted %v", deletes)
+	}
+}
+
+func TestDeleteMeDeletesOwnData(t *testing.T) {
+	var deletes []string
+	store := fakeProfiles{
+		byUser:  map[string]profile.Profile{"user-1": {UserID: "user-1", Bio: "mine"}, "user-2": {UserID: "user-2", Bio: "theirs"}},
+		deletes: &deletes,
+	}
+	rec := deleteMeAs(t, store, "good", "/me")
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty", rec.Body.String())
+	}
+	if len(deletes) != 1 || deletes[0] != "user-1" {
+		t.Errorf("deleted %v, want only [user-1]", deletes)
+	}
+	if _, ok := store.byUser["user-1"]; ok {
+		t.Error("the caller's profile is still there")
+	}
+	if _, ok := store.byUser["user-2"]; !ok {
+		t.Error("another user's profile was deleted")
+	}
+}
+
+func TestDeleteMeIgnoresUserIDFromRequest(t *testing.T) {
+	var deletes []string
+	store := fakeProfiles{deletes: &deletes}
+	deleteMeAs(t, store, "good", "/me?user_id=user-2")
+
+	if len(deletes) != 1 || deletes[0] != "user-1" {
+		t.Errorf("deleted %v, want only the token's user [user-1]", deletes)
+	}
+}
+
+// The web app retries after a partial failure, so a repeat or a user without data must succeed.
+func TestDeleteMeIsIdempotent(t *testing.T) {
+	store := fakeProfiles{byUser: map[string]profile.Profile{"user-1": {UserID: "user-1"}}}
+	for i := 1; i <= 2; i++ {
+		if rec := deleteMeAs(t, store, "good", "/me"); rec.Code != http.StatusNoContent {
+			t.Errorf("call %d: status = %d, want 204", i, rec.Code)
+		}
+	}
+	if rec := deleteMeAs(t, fakeProfiles{}, "good", "/me"); rec.Code != http.StatusNoContent {
+		t.Errorf("user without data: status = %d, want 204", rec.Code)
+	}
+}
+
+func TestDeleteMeStoreErrorIsHiddenFromClient(t *testing.T) {
+	rec := deleteMeAs(t, fakeProfiles{err: errors.New("connection refused to db.internal")}, "good", "/me")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "db.internal") {
+		t.Errorf("internal error leaked to the client: %q", rec.Body.String())
+	}
+}
+
+func TestDeleteMeIsNotCacheable(t *testing.T) {
+	for name, token := range map[string]string{"signed in": "good", "no token": ""} {
+		rec := deleteMeAs(t, fakeProfiles{}, token, "/me")
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", name, got)
+		}
 	}
 }

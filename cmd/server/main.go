@@ -43,6 +43,7 @@ func newMux(authn func(http.Handler) http.Handler, profiles profileStore) *http.
 	})))
 	mux.Handle("GET /me/profile", protect(getProfile(profiles)))
 	mux.Handle("PUT /me/profile", protect(putProfile(profiles)))
+	mux.Handle("DELETE /me", protect(deleteMe(profiles)))
 	return mux
 }
 

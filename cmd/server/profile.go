@@ -15,6 +15,7 @@ import (
 type profileStore interface {
 	Get(ctx context.Context, userID string) (profile.Profile, error)
 	Upsert(ctx context.Context, userID, bio string) (profile.Profile, error)
+	Delete(ctx context.Context, userID string) error
 }
 
 // maxProfileBody caps the request body: a bio is at most 1000 characters (4 bytes each in UTF-8,
@@ -98,6 +99,28 @@ func putProfile(store profileStore) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, profileResponse{UserID: p.UserID, Bio: p.Bio})
+	})
+}
+
+// deleteMe removes the caller's own data for an account deletion. Like the other handlers, the
+// user id comes only from the verified token. It is idempotent (a second call, or a user with no
+// data, still gets 204), so the web app can retry after a partial failure. Deleting the profile row
+// is all it does: the other tables follow their declared policy through their foreign keys
+// (see package userdata).
+func deleteMe(store profileStore) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := middleware.UserID(r.Context())
+		if !ok { // authn did not run: a wiring bug, never trust the request
+			internalError(w)
+			return
+		}
+		if err := store.Delete(r.Context(), userID); err != nil {
+			log.Printf("delete me: %v", err)
+			internalError(w)
+			return
+		}
+		log.Printf("delete me: ok user=%s", userID) // an account deletion should be traceable afterwards
+		w.WriteHeader(http.StatusNoContent)
 	})
 }
 
