@@ -49,6 +49,18 @@ func (s *Store) Get(ctx context.Context, userID string) (Profile, error) {
 	return p, nil
 }
 
+// Delete removes the profile row of userID. It is idempotent: a missing row is not an error, so
+// the web app can safely retry an account deletion.
+//
+// profiles is the root of a user's data (see package userdata): rows in other tables go with it,
+// stay, or lose their author as each table's foreign key says, so this is the only DELETE needed.
+func (s *Store) Delete(ctx context.Context, userID string) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("delete profile: %w", err)
+	}
+	return nil
+}
+
 // Upsert sets the bio of userID, creating the row on first write, and returns the stored profile.
 // It is idempotent: repeating the same call leaves the same state. A concurrent first write by
 // the same user is safe because the insert is a single ON CONFLICT statement.

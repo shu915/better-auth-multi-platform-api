@@ -34,7 +34,7 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
     - `down` は使わない(`DROP TABLE` でデータが消える。前に進める方向だけ。戻したいときは、新しいマイグレーションを足す)
     - マイグレーション用(DDL)とアプリ実行用(SELECT / INSERT / UPDATE / DELETE のみ)の DB ユーザーは分けるのが望ましい(次のステップで検討)
   - `updated_at` は自動では更新されない。`UPDATE` のたびに `updated_at = now()` を入れる
-  - 別 DB のユーザーを指す列(`user_id`)に外部キーはない。ユーザー削除との同期は、いずれ決める
+  - `profiles.user_id` 自体に外部キーはない(ユーザーは Web の DB にある)。ユーザー削除との同期は、`DELETE /me` と下の「ユーザーのデータの削除(退会)」のとおり。他のテーブルの `user_id` は、`profiles(user_id)` への外部キーで扱いを決める
 
 ## 環境変数
 - `APP_ENV`: `development`(未設定も同じ)か `production`。それ以外の値は起動時にエラー。`production` にすると、`AUTH_ISSUER`・`AUTH_AUDIENCE`・`CORS_ALLOWED_ORIGINS`・`DATABASE_URL` が必須になる(`CORS_ALLOWED_ORIGINS` はオリジンが 1 つ以上、`DATABASE_URL` は TLS 必須)(未設定なら起動時にエラー)
@@ -51,6 +51,18 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - 公開鍵を取得できないときは 401 ではなく 503 を返す(トークンの問題ではないため)。`auth.ErrInvalidToken` だけが 401
 - `internal/middleware/cors.go`: 認証ミドルウェアの外側に置く(プリフライトと 401 にも CORS ヘッダーを付けるため)
 - 保護するルートは `newMux` の `authn(...)` で包む(例: `GET /me`)
+
+## ユーザーのデータの削除(退会)
+- `DELETE /me`(`cmd/server/profile.go` の `deleteMe`): 呼んだ本人のデータを消す。`user_id` はトークンの `sub` だけから取る。冪等で、データがなくても `204 No Content`(Web が失敗後に再送できるように)。5xx のときは、中身を返さずログに残す。Web の退会は、この呼び出しの後に Better Auth の `deleteUser` を実行する想定(Web 側は実装済み: `src/lib/delete-account.ts`)
+- 実際に消すのは `profiles` の1行だけ(`profile.Store.Delete`)。`profiles` が根で、他のテーブルは `user_id` から `profiles(user_id)` への外部キーで、退会時の扱いが決まる
+- **全部カスケードにはしない。** コメントのように、退会後も残したいデータがあるため、`user_id` を持つテーブルは、扱いを `internal/userdata` の `Tables` に宣言する(理由も書く)。DB の外部キーは、宣言と一致させる:
+  - `delete`: 退会で消す。`user_id` は `REFERENCES profiles(user_id) ON DELETE CASCADE`
+  - `anonymize`: 残すが、投稿者を外す。`user_id` は NULL 可で `ON DELETE SET NULL`(画面では「退会したユーザー」など)
+  - `retain`: そのまま残す(保存義務など)。外部キーなし
+- `user_id` を持つテーブルを足すマイグレーションは、同じ変更で `Tables` に宣言する。足し忘れや、外部キーの食い違いは、`internal/profile/userdata_test.go` の `TestDeclaredPoliciesMatchTheSchema` が落ちて分かる(`TEST_DATABASE_URL` が必要)。宣言のテストが `internal/profile` にあるのは、DB のテスト用ヘルパー(未設定なら SKIP)がそこにあるため
+- 退会後も、発行済みの JWT は最大 5 分有効。その間に別の端末から `PUT /me/profile` が来ると、`profiles` の行が作り直される(孤児データ)。今は許容している(墓標のテーブルで防ぐ案はあるが、重いので見送り)
+  - Web の退会フローを作るときの順番: 先に Better Auth のセッションを全部失効させる(新しい JWT が出なくなる)→ `DELETE /me` → Better Auth のユーザーを削除する。これで、復活する窓はほぼ、すでに発行済みの JWT の残り(最大 5 分)だけになる
+- `DELETE /me` が消すのは、この API のデータだけ。アカウント本体(Better Auth のユーザー)は Web の DB にあり、Web が消す
 
 ## 設計方針
 将来 Echo などへ切り替える可能性がある。次を守る。
@@ -93,3 +105,4 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 ## 進捗ファイル
 - `claude-progress.txt` に、完了・実行中・これからのタスクを書く。新しいセッションは、最初にこのファイルと CLAUDE.md を読む
 - goal が終わるたびに(ループの終了時の報告と一緒に)更新する。長いセッションで文脈が劣化しても、続きから始められるようにするため
+- PR を作るとき(頼まれたとき)は、PR の前に `claude-progress.txt` を書き直す: 完了したものを「完了したタスク」に移し、「実行中」を現状に合わせ(「コミット直前」などの古い記述を消す)、「これから」の先頭を次の作業にする。進捗ファイルの変更も同じ PR に入れる

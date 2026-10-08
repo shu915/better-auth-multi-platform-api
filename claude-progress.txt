@@ -1,5 +1,5 @@
 claude-progress.txt (api)
-最終更新: 2026-10-07
+最終更新: 2026-10-08
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
 
 ## 完了したタスク
@@ -14,12 +14,17 @@ claude-progress.txt (api)
 - Web の画面から PUT /me/profile までの手動確認(人間が実施済み)
 - テスト(DB を使うテストは TEST_DATABASE_URL がないと SKIP)
 - evaluator エージェント(.claude/agents/evaluator.md)と、実装後のループ運用(CLAUDE.md)
+- 退会時のデータ削除(feat/account-deletion。PR 作成済み): `DELETE /me`(204、冪等、sub だけを使う)。消すのは profiles の1行で、他のテーブルは user_id の外部キーで扱いが決まる
+  - 全部カスケードにはしない。user_id を持つテーブルは、internal/userdata の Tables に delete / anonymize / retain を理由つきで宣言する。外部キーが宣言と食い違う、または宣言がないと、TestDeclaredPoliciesMatchTheSchema が落ちる
+  - 検証: gofmt・vet・build・test が通過。TEST_DATABASE_URL を設定して SKIP 0 件。壊すと落ちることを確認済み(WHERE なしの DELETE、ルートの削除、クエリの user_id を使う、宣言のないテーブル)
+  - 既知の限界: 退会後も JWT は最大 5 分有効で、その間の PUT /me/profile が行を作り直す。許容している
 
 ## 実行中のタスク
-- PUT /me/profile の PR を出す(web のプロフィール編集より先にマージする)
+- feat/account-deletion の PR のレビュー待ち(人間の作業)
+- Web 側の退会は実装済みで、実機での手動確認も済んだ(Web の PR は別リポジトリ)。確認したこと: 退会が通る、5 分超のセッションは断られて何も消えない、Go 停止中は失敗してユーザーが残る、bio を保存したユーザーの退会で profiles の行が消える、退会した Google ではログインできない、同じメールで新規ユーザーになる
 
 ## これからのタスク(順番)
-1. Web 側の OAuth の有効化に合わせて、必要なら確認する(Go は JWT を検証するだけなので、変更は不要の見込み)
+1. この PR と Web の退会の PR をマージする
 2. 1 回デプロイする(Fargate などを想定)
    - マイグレーションはデプロイ手順の中で 1 回だけ実行する(起動時にはしない)
    - 下の「未対応のレビュー指摘」を先に決める
@@ -34,9 +39,14 @@ claude-progress.txt (api)
 - レート制限がない(ALB と WAF で行う案)
 - DB の TLS は sslmode=require だとサーバー証明書を検証しない。verify-full を検討する
 - 複数端末からの更新は後勝ち(必要になったら If-Match などの楽観ロック)
-- トークンの失効と削除済みユーザー(JWT は最大 5 分有効。ユーザー削除との同期は未決)
+- トークンの失効と削除済みユーザー(JWT は最大 5 分有効。退会の直後に PUT /me/profile が来ると行が作り直される。今は許容。DELETE /me の追加で、削除との同期の入口はできた。Web 側の退会は実装済みで、他セッションの失効 → DELETE /me → ユーザー削除の順に呼ぶ)
 
-## PR に含める変更(feature/profile-update-api)
+## 前の PR に含めた変更(feature/profile-update-api。マージ済み)
 - PUT /me/profile の追加と、そのテスト
 - WriteError の共通化、UTF-8 の検証の追加
 - evaluator.md、CLAUDE.md の更新
+
+## 次の PR に含める変更(feat/account-deletion)
+- DELETE /me と profile.Store.Delete、そのテスト
+- internal/userdata(退会時の扱いの宣言)と、宣言とスキーマの一致を確かめるテスト(internal/profile/userdata_test.go)
+- CLAUDE.md の「ユーザーのデータの削除(退会)」、このファイルの更新
