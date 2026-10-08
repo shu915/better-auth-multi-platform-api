@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -101,12 +102,17 @@ func loadConfig(env func(string) string) (config, error) {
 		}
 	}
 	issuer := get("AUTH_ISSUER", "http://localhost:3000")
+	jwksURL := get("AUTH_JWKS_URL", issuer+"/api/auth/jwks")
+	if appEnv == "production" && !strings.HasPrefix(jwksURL, "https://") {
+		// The verifier allows plain http for localhost so development works; production must not.
+		return config{}, errors.New("AUTH_JWKS_URL must be https when APP_ENV=production")
+	}
 	return config{
 		Port: port,
 		Auth: auth.Config{
 			Issuer:   issuer,
 			Audience: get("AUTH_AUDIENCE", "better-auth-multi-platform-api"),
-			JWKSURL:  get("AUTH_JWKS_URL", issuer+"/api/auth/jwks"),
+			JWKSURL:  jwksURL,
 		},
 		CORSOrigins: corsOrigins,
 		// The default is the dummy credentials of the dev DB in docker-compose.yml, reachable from a host-run server.
@@ -116,8 +122,15 @@ func loadConfig(env func(string) string) (config, error) {
 
 // handler wires the middleware chain: CORS outermost so preflights and 401s carry CORS headers.
 func handler(verifier middleware.TokenVerifier, corsOrigins []string, profiles profileStore) http.Handler {
-	return middleware.CORS(corsOrigins)(newMux(middleware.Authenticate(verifier), profiles))
+	// Recover is outermost so a panic anywhere below, CORS included, still becomes a 500.
+	return middleware.Recover(middleware.CORS(corsOrigins)(
+		middleware.Timeout(requestTimeout)(newMux(middleware.Authenticate(verifier), profiles)),
+	))
 }
+
+// requestTimeout bounds one request, including its database queries and a JWKS refetch. It is
+// shorter than the server's WriteTimeout (15s) so the handler can still answer.
+const requestTimeout = 10 * time.Second
 
 func run() error {
 	// Fargate sends SIGTERM on task stop; drain in-flight requests before exiting.
