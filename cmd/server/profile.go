@@ -119,7 +119,7 @@ func deleteMe(store profileStore) http.Handler {
 			internalError(w)
 			return
 		}
-		log.Printf("delete me: ok user=%s", userID) // an account deletion should be traceable afterwards
+		log.Printf("delete me: ok user=%q", userID) // an account deletion should be traceable afterwards
 		w.WriteHeader(http.StatusNoContent)
 	})
 }

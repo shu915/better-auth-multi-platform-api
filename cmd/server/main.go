@@ -102,6 +102,10 @@ func loadConfig(env func(string) string) (config, error) {
 		}
 	}
 	issuer := get("AUTH_ISSUER", "http://localhost:3000")
+	if strings.HasSuffix(issuer, "/") {
+		// iss is compared exactly, and the default JWKS URL would get a double slash.
+		return config{}, errors.New("AUTH_ISSUER must not end with a slash")
+	}
 	jwksURL := get("AUTH_JWKS_URL", issuer+"/api/auth/jwks")
 	if appEnv == "production" && !strings.HasPrefix(jwksURL, "https://") {
 		// The verifier allows plain http for localhost so development works; production must not.
@@ -133,7 +137,7 @@ func handler(verifier middleware.TokenVerifier, corsOrigins []string, profiles p
 const requestTimeout = 10 * time.Second
 
 func run() error {
-	// Fargate sends SIGTERM on task stop; drain in-flight requests before exiting.
+	// The host (Render) sends SIGTERM when it stops an instance; drain in-flight requests before exiting.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
