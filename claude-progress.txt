@@ -1,5 +1,5 @@
 claude-progress.txt (api)
-最終更新: 2026-10-08
+最終更新: 2026-10-09
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
 
 ## 完了したタスク
@@ -21,22 +21,26 @@ claude-progress.txt (api)
 
 - 結合テスト(chore/tests-and-leftovers): cmd/server/integration_test.go(5 件)と internal/testdb。実 JWT 検証 + 実ストア + 実 Postgres を通す。実装を壊すと落ちることを確認済み(DELETE が消さない、GET が ?user_id を信用する、未知のフィールドを許す)。Stop hook は、開発 DB が起動していれば TEST_DATABASE_URL を自動で渡す。CI に Postgres の service を足し、マイグレーションを適用し、SKIP があれば失敗にした(.github/workflows/ci.yml。人が貼り付けた)。hook の変更: commit と workflows の編集のブロックを外した(push は残す)
 
+- デプロイ前の調整(chore/pre-deploy): フルレビューの指摘のうち、マイグレーション手順(Render、手元から goose up)を CLAUDE.md に追加、AUTH_ISSUER の末尾スラッシュを起動時に拒否(テストあり、検査を外すと落ちることを確認済み)、退会ログを %q に、Fargate の記述を Render に。見送り(理由は「未対応のレビュー指摘」): verify-full の強制、レート制限、/ready、DDL 権限の分離。検証: gofmt・vet・test 通過(DB テストはローカルでは SKIP。CI で確認)
+
 ## 実行中のタスク
-- chore/tests-and-leftovers(結合テスト、CI の DB テスト、本番向けの指摘の対応)の PR。web 側の同名ブランチ(actions のテスト、hooks)とセット。push して PR を出し、CI で DB テストが SKIP 0 で通るかを Actions で確認する(人間の作業)
+- chore/pre-deploy の PR。push して PR を出し、CI(DB テストが SKIP 0)を Actions で確認する(人間の作業)。マージ後、Render に出す前に CLAUDE.md の手順で goose up
 - 退会(api の #12、web の #10)はマージ済み。Web の退会は実機で手動確認済み
 
 ## これからのタスク(順番)
 1. chore/tests-and-leftovers の PR をマージする(退会の PR は両方マージ済み)
-2. 1 回デプロイする(Fargate などを想定)
+2. 1 回デプロイする(Render。マイグレーションは CLAUDE.md の手順で手元から)
    - マイグレーションはデプロイ手順の中で 1 回だけ実行する(起動時にはしない)
    - 下の「未対応のレビュー指摘」を先に決める
 3. タグを付ける
 4. Tauri と Expo は、Go を変えずに足せる(CORS のオリジンの追加が要るかもしれない)
 
 ## 未対応のレビュー指摘(デプロイ前に決める)
-- Neon の pooled URL(PgBouncer)を使う場合、pgx のプリペアドステートメントでエラーになる可能性がある。QueryExecMode を確認する。あわせて、statement_timeout を startup パラメータで送っているため、pooled エンドポイントが拒否しないかも実機で確認する(拒否されても起動時の Ping で失敗するだけで、黙って無効にはならない)
-- レート制限がない(ALB と WAF で行う案)
-- DB の TLS は sslmode=require だとサーバー証明書を検証しない。verify-full を検討する
+- (Go の DB は Render なので、Neon の pooled URL の件は当てはまらない)
+- レート制限がない(許容。前段で行うなら Cloudflare など)
+- DB の TLS は sslmode=require だとサーバー証明書を検証しない(Render の証明書で verify-full が通るか未確認のため、コードでは強制しない。通るなら URL を verify-full にする)
+- /health は DB を見ない(スキーマ未適用でも緑)。/ready(SELECT 1)は未実装
+- アプリ用 DB ユーザーが DDL 権限を持つ(SELECT/INSERT/UPDATE/DELETE だけのユーザーに分けるのが望ましい)
 - 複数端末からの更新は後勝ち(必要になったら If-Match などの楽観ロック)
 - トークンの失効と削除済みユーザー(JWT は最大 5 分有効。退会の直後に PUT /me/profile が来ると行が作り直される。今は許容。DELETE /me の追加で、削除との同期の入口はできた。Web 側の退会は実装済みで、他セッションの失効 → DELETE /me → ユーザー削除の順に呼ぶ)
 

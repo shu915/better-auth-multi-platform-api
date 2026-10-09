@@ -143,13 +143,14 @@ func TestLoadConfigProductionRejectsUnsafeValues(t *testing.T) {
 		"DATABASE_URL":         "postgres://app:secret@db.example.com:5432/app?sslmode=require",
 	}
 	for name, override := range map[string]map[string]string{
-		"DB sslmode=disable":   {"DATABASE_URL": "postgres://app:secret@db.example.com/app?sslmode=disable"},
-		"DB sslmode=prefer":    {"DATABASE_URL": "postgres://app:secret@db.example.com/app?sslmode=prefer"},
-		"DB sslmode omitted":   {"DATABASE_URL": "postgres://app:secret@db.example.com/app"},
-		"JWKS over http":       {"AUTH_JWKS_URL": "http://localhost:3000/api/auth/jwks"},
-		"issuer over http":     {"AUTH_ISSUER": "http://web.example.com"},
-		"CORS lists no origin": {"CORS_ALLOWED_ORIGINS": ","},
-		"CORS only whitespace": {"CORS_ALLOWED_ORIGINS": " , "},
+		"DB sslmode=disable":    {"DATABASE_URL": "postgres://app:secret@db.example.com/app?sslmode=disable"},
+		"DB sslmode=prefer":     {"DATABASE_URL": "postgres://app:secret@db.example.com/app?sslmode=prefer"},
+		"DB sslmode omitted":    {"DATABASE_URL": "postgres://app:secret@db.example.com/app"},
+		"JWKS over http":        {"AUTH_JWKS_URL": "http://localhost:3000/api/auth/jwks"},
+		"issuer over http":      {"AUTH_ISSUER": "http://web.example.com"},
+		"issuer trailing slash": {"AUTH_ISSUER": "https://web.example.com/"},
+		"CORS lists no origin":  {"CORS_ALLOWED_ORIGINS": ","},
+		"CORS only whitespace":  {"CORS_ALLOWED_ORIGINS": " , "},
 	} {
 		t.Run(name, func(t *testing.T) {
 			env := map[string]string{}

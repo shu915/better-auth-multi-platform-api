@@ -12,7 +12,7 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 ## 使用技術
 - Go 1.27(標準の `net/http`。`go.mod` と Dockerfile のイメージに合わせる)
 - Postgres(接続は pgx。開発は `docker-compose.yml` の `db`)
-- Docker(本番は Fargate などのコンテナ基盤を想定)
+- Docker(本番は Render)
 - Air(開発時のホットリロード)
 - Web とは JWT で連携(JWKS で署名を検証。Go はステートレス)
 
@@ -31,6 +31,7 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
   - **本番**:
     - アプリの起動時ではなく、デプロイ手順の中で 1 回だけ実行する(複数タスクの同時起動で衝突させないため)
     - `GOOSE_DBSTRING` は、`sslmode=require` 以上の URL を渡す(goose にはアプリの TLS 検証がない)
+    - **手順(Render)**: 本番のイメージ(distroless)に goose と `migrations/` は入っていない。手元(このリポジトリ)から、Render の DB の **外部 URL**(Render の DB の設定で、自分の IP を許可する)を `GOOSE_DBSTRING` に入れて `go tool goose -dir migrations up` を 1 回実行する。`status` で全部 Applied を確認してから、サービスを出す(スキーマがないと `/health` は緑のまま、`/me/profile` が全部 500 になる)。スキーマを変えるときも、先にこの手順で DB を進めてから新しいイメージを出す(古いイメージが動いている間に壊れない足し方だけにする)
     - `down` は使わない(`DROP TABLE` でデータが消える。前に進める方向だけ。戻したいときは、新しいマイグレーションを足す)
     - マイグレーション用(DDL)とアプリ実行用(SELECT / INSERT / UPDATE / DELETE のみ)の DB ユーザーは分けるのが望ましい(次のステップで検討)
   - `updated_at` は自動では更新されない。`UPDATE` のたびに `updated_at = now()` を入れる
@@ -71,6 +72,9 @@ Go は JWT を検証するだけで、呼び出し元を区別しない。その
 - DB を使うテストは、`TEST_DATABASE_URL` がないと SKIP される。Stop hook は、開発用 DB(`docker compose up -d db`)が起動していれば、自動でこの変数を渡す。CI にも Postgres を入れる(`.github/workflows/ci.yml`)
 - `cmd/server/integration_test.go`: 結合テスト。HTTP のハンドラ、本物の JWT 検証(テスト用の鍵と JWKS サーバー)、本物のストア、本物の Postgres を通す。確かめること: PUT → GET → DELETE の一本道、DELETE の冪等性、他のユーザーに影響しない、`user_id` はトークンの `sub` だけから取る(クエリやボディで他人を指せない)、不正なトークンでは何も変わらない、bio の規則(1000 文字、NUL)が実 DB で効く
 - DB が要るテストは `internal/testdb` の `Pool(t)` を使う(未設定なら SKIP)
+
+## デプロイ先
+- API(この Go)とその DB は **Render**。Web は **Vercel + Neon**(Web のリポジトリの CLAUDE.md)。`AUTH_ISSUER` と `AUTH_JWKS_URL` は、Vercel の本番 URL(https)にする。Render の DB に、`verify-full` で接続できるか(証明書)は、デプロイ時に確認する。
 
 ## 設計方針
 将来 Echo などへ切り替える可能性がある。次を守る。
