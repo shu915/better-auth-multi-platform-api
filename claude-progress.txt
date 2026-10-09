@@ -3,56 +3,33 @@ claude-progress.txt (api)
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
 
 ## 完了したタスク
-- hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの gofmt、応答終了時の gofmt・vet・build・test。evaluator はレビューと改ざん確認だけ担当
-- JWT の検証(EdDSA のみ、JWKS をキャッシュ、issuer と audience を検証)
-- 公開鍵を取れないときは 503(401 にしない)
-- CORS、no-store、GET /health、GET /me
-- profiles テーブルのマイグレーション(goose)
-- GET /me/profile と PUT /me/profile(user_id はトークンの sub だけから取る)
-  - bio は最大 1000 文字、NUL と不正な UTF-8 は 422、本体は 16KB まで(超えると 413)
-  - エラーの JSON 形式は middleware.WriteError に一本化
-- Web の画面から PUT /me/profile までの手動確認(人間が実施済み)
-- テスト(DB を使うテストは TEST_DATABASE_URL がないと SKIP)
-- evaluator エージェント(.claude/agents/evaluator.md)と、実装後のループ運用(CLAUDE.md)
-- 退会時のデータ削除(feat/account-deletion。PR 作成済み): `DELETE /me`(204、冪等、sub だけを使う)。消すのは profiles の1行で、他のテーブルは user_id の外部キーで扱いが決まる
-  - 全部カスケードにはしない。user_id を持つテーブルは、internal/userdata の Tables に delete / anonymize / retain を理由つきで宣言する。外部キーが宣言と食い違う、または宣言がないと、TestDeclaredPoliciesMatchTheSchema が落ちる
-  - 検証: gofmt・vet・build・test が通過。TEST_DATABASE_URL を設定して SKIP 0 件。壊すと落ちることを確認済み(WHERE なしの DELETE、ルートの削除、クエリの user_id を使う、宣言のないテーブル)
-  - 既知の限界: 退会後も JWT は最大 5 分有効で、その間の PUT /me/profile が行を作り直す。許容している
-
-- 結合テスト(chore/tests-and-leftovers): cmd/server/integration_test.go(5 件)と internal/testdb。実 JWT 検証 + 実ストア + 実 Postgres を通す。実装を壊すと落ちることを確認済み(DELETE が消さない、GET が ?user_id を信用する、未知のフィールドを許す)。Stop hook は、開発 DB が起動していれば TEST_DATABASE_URL を自動で渡す。CI に Postgres の service を足し、マイグレーションを適用し、SKIP があれば失敗にした(.github/workflows/ci.yml。人が貼り付けた)。hook の変更: commit と workflows の編集のブロックを外した(push は残す)
-
-- デプロイ前の調整(chore/pre-deploy): フルレビューの指摘のうち、マイグレーション手順(Render、手元から goose up)を CLAUDE.md に追加、AUTH_ISSUER の末尾スラッシュを起動時に拒否(テストあり、検査を外すと落ちることを確認済み)、退会ログを %q に、Fargate の記述を Render に。見送り(理由は「未対応のレビュー指摘」): verify-full の強制、レート制限、/ready、DDL 権限の分離。検証: gofmt・vet・test 通過(DB テストはローカルでは SKIP。CI で確認)
+- hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの gofmt、応答終了時の gofmt・vet・build・test。evaluator エージェント(.claude/agents/evaluator.md)は、レビューと改ざん確認だけ担当。実装後のループ運用は CLAUDE.md
+- JWT の検証(internal/auth): EdDSA のみ、JWKS をキャッシュ、iss・aud・exp・sub を検証。公開鍵を取れないときは 503(401 にしない)
+- ルート: GET /health、GET /me、GET と PUT /me/profile、DELETE /me。CORS、no-store。user_id はトークンの sub だけから取る
+- profiles のマイグレーション(goose、migrations/00001)
+- PUT /me/profile の検証: bio は最大 1000 文字、NUL と不正な UTF-8 は 422、本体は 16KB まで(超えると 413)。エラーの JSON 形式は middleware.WriteError に一本化
+- 退会時のデータ削除: DELETE /me(204、冪等)。消すのは profiles の 1 行。他のテーブルは internal/userdata の Tables に delete / anonymize / retain を理由つきで宣言し、外部キーが宣言と食い違うと TestDeclaredPoliciesMatchTheSchema が落ちる
+- 耐障害: Recover ミドルウェア、リクエストの期限(10 秒)、DB プールの上限(10 接続)と statement_timeout(5 秒)、本番の AUTH_JWKS_URL は https のみ、AUTH_ISSUER の末尾 / は起動時に拒否、本番の DATABASE_URL は sslmode=require 以上。それぞれテストあり
+- テスト: 単体、結合(cmd/server/integration_test.go。実 JWT 検証 + 実ストア + 実 Postgres)、internal/testdb。実装を壊すと落ちることを確認済み。CI(.github/workflows/ci.yml)は Postgres を立て、マイグレーションを適用し、SKIP があれば失敗にする
+- 本番へのデプロイ(2026-10-09): Render(Docker、DB も Render、Web と同じシンガポール)。マイグレーションは手元から goose up を 1 回(CLAUDE.md の手順)。Web との連携は本番で確認済み(JWT の検証、bio の読み書き、退会)
+- README を書いた(日本語。全体像、エンドポイント、技術スタックの表、動かし方、環境変数、デプロイ、テスト)
 
 ## 実行中のタスク
-- chore/pre-deploy の PR。push して PR を出し、CI(DB テストが SKIP 0)を Actions で確認する(人間の作業)。マージ後、Render に出す前に CLAUDE.md の手順で goose up
-- 退会(api の #12、web の #10)はマージ済み。Web の退会は実機で手動確認済み
+- なし
+
+## 既知の限界(許容している)
+- レート制限がない(前段で行うなら Cloudflare など)
+- 退会後も JWT は最大 5 分有効で、その間の PUT /me/profile が行を作り直す(孤児データ)。Web の退会は、他セッションの失効 → DELETE /me → ユーザー削除の順で、窓を小さくしている
+- DB の TLS は sslmode=require でサーバー証明書を検証しない。Render の証明書で verify-full が通るかは未確認のため、コードでは強制しない(通るなら DATABASE_URL を verify-full にする)
+- /health は DB を見ない(スキーマ未適用でも緑)。/ready(SELECT 1)は未実装。Render は DB の一時的な不調でインスタンスを再起動しうるので、入れるなら、Render のヘルスチェックは /health のままにする
+- アプリ用の DB ユーザーが DDL の権限を持つ(SELECT・INSERT・UPDATE・DELETE だけのユーザーに分けるのが望ましい)
+- JWKS の再取得に 15 秒のクールダウンがあり、鍵のローテーション直後に偽の kid で消費されると、新しい kid の正規トークンが最長 15 秒 401 になる
+- JWT の最大有効期間は、exp の存在しか見ていない(5 分は Web 側の設定頼み)
+- 複数端末からの更新は後勝ち(必要になったら If-Match などの楽観ロック)
+- Dockerfile のベースイメージは、タグ固定のみ(digest 固定ではない)
+- Render の無料プランはスリープする。Web の Go 呼び出しは 5 秒で切れるので、スリープ明けの初回に bio が出ないことがある
 
 ## これからのタスク(順番)
-1. chore/tests-and-leftovers の PR をマージする(退会の PR は両方マージ済み)
-2. 1 回デプロイする(Render。マイグレーションは CLAUDE.md の手順で手元から)
-   - マイグレーションはデプロイ手順の中で 1 回だけ実行する(起動時にはしない)
-   - 下の「未対応のレビュー指摘」を先に決める
-3. タグを付ける
-4. Tauri と Expo は、Go を変えずに足せる(CORS のオリジンの追加が要るかもしれない)
-
-## 未対応のレビュー指摘(デプロイ前に決める)
-- (Go の DB は Render なので、Neon の pooled URL の件は当てはまらない)
-- レート制限がない(許容。前段で行うなら Cloudflare など)
-- DB の TLS は sslmode=require だとサーバー証明書を検証しない(Render の証明書で verify-full が通るか未確認のため、コードでは強制しない。通るなら URL を verify-full にする)
-- /health は DB を見ない(スキーマ未適用でも緑)。/ready(SELECT 1)は未実装
-- アプリ用 DB ユーザーが DDL 権限を持つ(SELECT/INSERT/UPDATE/DELETE だけのユーザーに分けるのが望ましい)
-- 複数端末からの更新は後勝ち(必要になったら If-Match などの楽観ロック)
-- トークンの失効と削除済みユーザー(JWT は最大 5 分有効。退会の直後に PUT /me/profile が来ると行が作り直される。今は許容。DELETE /me の追加で、削除との同期の入口はできた。Web 側の退会は実装済みで、他セッションの失効 → DELETE /me → ユーザー削除の順に呼ぶ)
-
-## 対応済みのレビュー指摘(chore/tests-and-leftovers)
-- Recover ミドルウェア、リクエストの期限(10 秒)、プールの上限(10 接続)と statement_timeout(5 秒)、本番の AUTH_JWKS_URL は https のみ。それぞれテストあり(実装を壊すと落ちることを確認済み)
-
-## 前の PR に含めた変更(feature/profile-update-api。マージ済み)
-- PUT /me/profile の追加と、そのテスト
-- WriteError の共通化、UTF-8 の検証の追加
-- evaluator.md、CLAUDE.md の更新
-
-## 次の PR に含める変更(feat/account-deletion)
-- DELETE /me と profile.Store.Delete、そのテスト
-- internal/userdata(退会時の扱いの宣言)と、宣言とスキーマの一致を確かめるテスト(internal/profile/userdata_test.go)
-- CLAUDE.md の「ユーザーのデータの削除(退会)」、このファイルの更新
+1. main にタグ v0.2.0 を付ける(web と api の両方。api を先に)
+2. verify-full で Render DB に繋がるか試す(DATABASE_URL を verify-full にして起動する)
+3. Tauri と Expo は、Go を変えずに足せる(CORS のオリジンの追加が要るかもしれない。Web 側の /token の HTTP 拒否も見直す)。直接 Go を呼ぶ設計になると、退会後に JWT で行が復活する窓が現実になるので、そのときにトゥームストーンを検討する
