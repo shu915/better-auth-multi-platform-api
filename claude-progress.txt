@@ -1,35 +1,36 @@
 claude-progress.txt (api)
-最終更新: 2026-10-09
-新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに、このファイルを更新する。
+最終更新: 2026-10-10
+新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに更新する。
+設計の詳細は docs/design.md、マイグレーションとデプロイの手順は docs/deploy.md。ここには状況だけを書く。
 
 ## 完了したタスク
-- hooks(.claude/settings.json と .claude/hooks/): 実行前のガード、編集ごとの gofmt、応答終了時の gofmt・vet・build・test。evaluator エージェント(.claude/agents/evaluator.md)は、レビューと改ざん確認だけ担当。実装後のループ運用は CLAUDE.md
-- JWT の検証(internal/auth): EdDSA のみ、JWKS をキャッシュ、iss・aud・exp・sub を検証。公開鍵を取れないときは 503(401 にしない)
+- JWT の検証(EdDSA のみ、JWKS をキャッシュ、iss・aud・exp・sub を検証。公開鍵を取れないときは 503)
 - ルート: GET /health、GET /me、GET と PUT /me/profile、DELETE /me。CORS、no-store。user_id はトークンの sub だけから取る
-- profiles のマイグレーション(goose、migrations/00001)
-- PUT /me/profile の検証: bio は最大 1000 文字、NUL と不正な UTF-8 は 422、本体は 16KB まで(超えると 413)。エラーの JSON 形式は middleware.WriteError に一本化
-- 退会時のデータ削除: DELETE /me(204、冪等)。消すのは profiles の 1 行。他のテーブルは internal/userdata の Tables に delete / anonymize / retain を理由つきで宣言し、外部キーが宣言と食い違うと TestDeclaredPoliciesMatchTheSchema が落ちる
-- 耐障害: Recover ミドルウェア、リクエストの期限(10 秒)、DB プールの上限(10 接続)と statement_timeout(5 秒)、本番の AUTH_JWKS_URL は https のみ、AUTH_ISSUER の末尾 / は起動時に拒否、本番の DATABASE_URL は sslmode=require 以上。それぞれテストあり
-- テスト: 単体、結合(cmd/server/integration_test.go。実 JWT 検証 + 実ストア + 実 Postgres)、internal/testdb。実装を壊すと落ちることを確認済み。CI(.github/workflows/ci.yml)は Postgres を立て、マイグレーションを適用し、SKIP があれば失敗にする
-- 本番へのデプロイ(2026-10-09): Render(Docker、DB も Render、Web と同じシンガポール)。マイグレーションは手元から goose up を 1 回(CLAUDE.md の手順)。Web との連携は本番で確認済み(JWT の検証、bio の読み書き、退会)
-- README を書いた(日本語。全体像、エンドポイント、技術スタックの表、動かし方、環境変数、デプロイ、テスト)
+- profiles のマイグレーション(goose)と、PUT /me/profile の検証(bio 1000 文字、NUL と不正な UTF-8 は 422、本体 16KB まで)
+- 退会時のデータ削除: DELETE /me(204、冪等)。他のテーブルの扱いは internal/userdata の Tables に宣言し、食い違いはテストで落ちる
+- 耐障害: Recover、リクエストの期限(10 秒)、DB プール(10 接続)と statement_timeout(5 秒)、本番の設定の検査(https の JWKS、sslmode=require 以上)
+- テスト: 単体、結合(実 JWT 検証 + 実ストア + 実 Postgres)。CI は Postgres を立て、SKIP があれば失敗にする
+- hooks と evaluator、実装後のループ運用
+- 本番デプロイ(2026-10-09): Render(Docker、DB も Render、シンガポール)。Web との連携(JWT の検証、bio の読み書き、退会)を本番で確認済み
+- README を書いた
+- CLAUDE.md を軽くした(2026-10-10): 詳細を docs/design.md と docs/deploy.md に移した
 
 ## 実行中のタスク
-- なし
+- なし(ブランチ docs/slim-claude-md に、CLAUDE.md の整理が未コミットで載っている)
 
 ## 既知の限界(許容している)
 - レート制限がない(前段で行うなら Cloudflare など)
-- 退会後も JWT は最大 5 分有効で、その間の PUT /me/profile が行を作り直す(孤児データ)。Web の退会は、他セッションの失効 → DELETE /me → ユーザー削除の順で、窓を小さくしている
-- DB の TLS は sslmode=require でサーバー証明書を検証しない。Render の証明書で verify-full が通るかは未確認のため、コードでは強制しない(通るなら DATABASE_URL を verify-full にする)
-- /health は DB を見ない(スキーマ未適用でも緑)。/ready(SELECT 1)は未実装。Render は DB の一時的な不調でインスタンスを再起動しうるので、入れるなら、Render のヘルスチェックは /health のままにする
-- アプリ用の DB ユーザーが DDL の権限を持つ(SELECT・INSERT・UPDATE・DELETE だけのユーザーに分けるのが望ましい)
+- 退会後も JWT は最大 5 分有効で、その間の PUT /me/profile が行を作り直す(孤児データ)
+- DB の TLS は sslmode=require でサーバー証明書を検証しない。verify-full が通るかは未確認のため、コードでは強制しない
+- /health は DB を見ない(スキーマ未適用でも緑)。/ready は未実装。入れるなら Render のヘルスチェックは /health のままにする
+- アプリ用の DB ユーザーが DDL の権限を持つ
 - JWKS の再取得に 15 秒のクールダウンがあり、鍵のローテーション直後に偽の kid で消費されると、新しい kid の正規トークンが最長 15 秒 401 になる
-- JWT の最大有効期間は、exp の存在しか見ていない(5 分は Web 側の設定頼み)
+- JWT の最大有効期間は exp の存在しか見ていない(5 分は Web 側の設定頼み)
 - 複数端末からの更新は後勝ち(必要になったら If-Match などの楽観ロック)
-- Dockerfile のベースイメージは、タグ固定のみ(digest 固定ではない)
-- Render の無料プランはスリープする。Web の Go 呼び出しは 5 秒で切れるので、スリープ明けの初回に bio が出ないことがある
+- Dockerfile のベースイメージはタグ固定のみ(digest 固定ではない)
+- Render の無料プランはスリープする。スリープ明けの初回は Web が 5 秒で切れて bio が出ないことがある
 
 ## これからのタスク(順番)
-1. main にタグ v0.2.0 を付ける(web と api の両方。api を先に)
+1. single-db モードを先に作る(Tauri / Expo より前)
 2. verify-full で Render DB に繋がるか試す(DATABASE_URL を verify-full にして起動する)
 3. Tauri と Expo は、Go を変えずに足せる(CORS のオリジンの追加が要るかもしれない。Web 側の /token の HTTP 拒否も見直す)。直接 Go を呼ぶ設計になると、退会後に JWT で行が復活する窓が現実になるので、そのときにトゥームストーンを検討する
