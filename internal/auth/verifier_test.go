@@ -73,10 +73,11 @@ func jwksServer(t *testing.T, currently func() []keyPair) *httptest.Server {
 type claims struct {
 	issuer, audience, subject string
 	expires                   time.Time
+	authTime                  any // the auth_time claim as it is put in the token; nil leaves it out
 }
 
 func goodClaims() claims {
-	return claims{testIssuer, testAudience, "user-1", time.Now().Add(5 * time.Minute)}
+	return claims{testIssuer, testAudience, "user-1", time.Now().Add(5 * time.Minute), nil}
 }
 
 func sign(t *testing.T, kp keyPair, c claims) string {
@@ -84,6 +85,9 @@ func sign(t *testing.T, kp keyPair, c claims) string {
 	b := jwt.NewBuilder().Issuer(c.issuer).Audience([]string{c.audience}).IssuedAt(time.Now()).Expiration(c.expires)
 	if c.subject != "" {
 		b = b.Subject(c.subject)
+	}
+	if c.authTime != nil {
+		b = b.Claim("auth_time", c.authTime)
 	}
 	tok, err := b.Build()
 	if err != nil {
@@ -158,12 +162,53 @@ func TestVerify(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sub, err := v.Verify(context.Background(), tt.token)
+			got, err := v.Verify(context.Background(), tt.token)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
-			if sub != tt.wantSub {
-				t.Errorf("sub = %q, want %q", sub, tt.wantSub)
+			if got.UserID != tt.wantSub {
+				t.Errorf("sub = %q, want %q", got.UserID, tt.wantSub)
+			}
+		})
+	}
+}
+
+// auth_time says when the user last signed in. A token without a usable one is still a valid
+// token (zero time); only the callers that need a recent sign-in refuse it.
+func TestVerifyAuthTime(t *testing.T) {
+	kp := newKeyPair(t, "k1")
+	srv := jwksServer(t, func() []keyPair { return []keyPair{kp} })
+	v := newTestVerifier(t, srv.URL)
+
+	signedIn := time.Now().Add(-3 * time.Minute).Truncate(time.Second)
+
+	tests := []struct {
+		name     string
+		authTime any
+		want     time.Time
+	}{
+		{"seconds since the epoch", signedIn.Unix(), signedIn},
+		{"a float is fine too (JSON has one kind of number)", float64(signedIn.Unix()), signedIn},
+		{"missing", nil, time.Time{}},
+		{"a string", "yesterday", time.Time{}},
+		{"zero", int64(0), time.Time{}},
+		{"negative", int64(-5), time.Time{}},
+		{"too large to be a time", 1e30, time.Time{}},
+		{"an object", map[string]any{"at": 1}, time.Time{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := goodClaims()
+			c.authTime = tt.authTime
+			got, err := v.Verify(context.Background(), sign(t, kp, c))
+			if err != nil {
+				t.Fatalf("the token itself is valid, got %v", err)
+			}
+			if got.UserID != "user-1" {
+				t.Errorf("sub = %q, want user-1", got.UserID)
+			}
+			if !got.AuthTime.Equal(tt.want) {
+				t.Errorf("AuthTime = %v, want %v", got.AuthTime, tt.want)
 			}
 		})
 	}

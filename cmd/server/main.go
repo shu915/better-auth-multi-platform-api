@@ -26,6 +26,11 @@ func main() {
 	}
 }
 
+// freshAuthWindow is how recently the user must have signed in to do something that cannot be
+// undone (DELETE /me). It is the web app's FRESH_SESSION_SECONDS (5 minutes). The web app's own
+// account deletion asks for 30 seconds less, so a request from it never lands on this edge.
+const freshAuthWindow = 5 * time.Minute
+
 // newMux builds the routes. authn wraps the endpoints that require a signed-in user;
 // those return personal data, so their responses (including 401s) are also marked no-store.
 func newMux(authn func(http.Handler) http.Handler, profiles profileStore) *http.ServeMux {
@@ -44,7 +49,7 @@ func newMux(authn func(http.Handler) http.Handler, profiles profileStore) *http.
 	})))
 	mux.Handle("GET /me/profile", protect(getProfile(profiles)))
 	mux.Handle("PUT /me/profile", protect(putProfile(profiles)))
-	mux.Handle("DELETE /me", protect(deleteMe(profiles)))
+	mux.Handle("DELETE /me", protect(middleware.RequireRecentAuth(freshAuthWindow)(deleteMe(profiles))))
 	return mux
 }
 

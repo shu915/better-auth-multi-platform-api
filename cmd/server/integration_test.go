@@ -50,11 +50,21 @@ func newITKey(t *testing.T) itKey {
 	return itKey{private: key}
 }
 
+// sign makes a token for a user who signed in just now (auth_time is the present).
 func (k itKey) sign(t *testing.T, subject, audience string, expires time.Time) string {
+	t.Helper()
+	return k.signWithAuthTime(t, subject, audience, expires, time.Now().Unix())
+}
+
+// signWithAuthTime is sign with the auth_time claim chosen by the caller; nil leaves it out.
+func (k itKey) signWithAuthTime(t *testing.T, subject, audience string, expires time.Time, authTime any) string {
 	t.Helper()
 	b := jwt.NewBuilder().Issuer(itIssuer).Audience([]string{audience}).IssuedAt(time.Now()).Expiration(expires)
 	if subject != "" {
 		b = b.Subject(subject)
+	}
+	if authTime != nil {
+		b = b.Claim("auth_time", authTime)
 	}
 	tok, err := b.Build()
 	if err != nil {
@@ -188,6 +198,32 @@ func TestProfileLifecycleThroughRealJWTAndDB(t *testing.T) {
 	}
 	if status, _ := e.do(t, http.MethodDelete, "/me", token, ""); status != http.StatusNoContent {
 		t.Fatalf("second DELETE /me: status = %d, want 204 (idempotent)", status)
+	}
+}
+
+// The point of auth_time: a token minted from a stolen session (it can be minted at any time) does
+// not get to delete the account's data. Everything else about the profile still works with it.
+func TestDeleteNeedsARecentSignInThroughRealJWTAndDB(t *testing.T) {
+	e := newITEnv(t)
+	id, fresh := e.newUser(t)
+	e.do(t, http.MethodPut, "/me/profile", fresh, `{"bio":"keep me"}`)
+
+	expires := time.Now().Add(5 * time.Minute)
+	for name, token := range map[string]string{
+		"signed in an hour ago": e.key.signWithAuthTime(t, id, itAudience, expires, time.Now().Add(-time.Hour).Unix()),
+		"no auth_time":          e.key.signWithAuthTime(t, id, itAudience, expires, nil),
+		"auth_time is a string": e.key.signWithAuthTime(t, id, itAudience, expires, "now"),
+	} {
+		if status, _ := e.do(t, http.MethodDelete, "/me", token, ""); status != http.StatusForbidden {
+			t.Errorf("%s: DELETE /me: status = %d, want 403", name, status)
+		}
+		if got := e.bioOf(t, token); got != "keep me" {
+			t.Fatalf("%s: the bio is %q after a refused DELETE, want it kept", name, got)
+		}
+	}
+
+	if status, _ := e.do(t, http.MethodDelete, "/me", fresh, ""); status != http.StatusNoContent {
+		t.Fatalf("DELETE /me with a recent sign-in: status = %d, want 204", status)
 	}
 }
 

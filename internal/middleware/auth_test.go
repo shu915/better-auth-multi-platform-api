@@ -7,20 +7,25 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shu915/better-auth-multi-platform-api/internal/auth"
 )
 
 type fakeVerifier struct{}
 
-func (fakeVerifier) Verify(_ context.Context, token string) (string, error) {
+var signedIn = time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+
+func (fakeVerifier) Verify(_ context.Context, token string) (auth.Claims, error) {
 	switch token {
 	case "good":
-		return "user-1", nil
+		return auth.Claims{UserID: "user-1", AuthTime: signedIn}, nil
+	case "no-auth-time":
+		return auth.Claims{UserID: "user-1"}, nil
 	case "jwks-down":
-		return "", errors.New("jwks unreachable")
+		return auth.Claims{}, errors.New("jwks unreachable")
 	}
-	return "", auth.ErrInvalidToken
+	return auth.Claims{}, auth.ErrInvalidToken
 }
 
 func TestAuthenticate(t *testing.T) {
@@ -68,5 +73,33 @@ func TestAuthenticate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAuthenticateSetsTheSignInTime(t *testing.T) {
+	var gotTime time.Time
+	var gotOK bool
+	h := Authenticate(fakeVerifier{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTime, gotOK = AuthTime(r.Context())
+	}))
+
+	for _, tt := range []struct {
+		token  string
+		wantOK bool
+	}{
+		{"good", true},
+		{"no-auth-time", false}, // the user is known, but when they signed in is not
+	} {
+		gotTime, gotOK = time.Time{}, false
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+tt.token)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+
+		if gotOK != tt.wantOK {
+			t.Errorf("%s: AuthTime ok = %v, want %v", tt.token, gotOK, tt.wantOK)
+		}
+		if tt.wantOK && !gotTime.Equal(signedIn) {
+			t.Errorf("%s: AuthTime = %v, want %v", tt.token, gotTime, signedIn)
+		}
 	}
 }

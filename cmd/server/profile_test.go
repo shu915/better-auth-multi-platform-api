@@ -292,6 +292,40 @@ func TestDeleteMeRequiresAuth(t *testing.T) {
 	}
 }
 
+// A token can be minted from a stolen session at any time, so DELETE /me also asks that the user
+// signed in recently (auth_time). The web app's own account deletion asks for the same thing.
+func TestDeleteMeRequiresARecentSignIn(t *testing.T) {
+	for _, token := range []string{"signed-in-long-ago", "no-auth-time"} {
+		var deletes []string
+		store := fakeProfiles{
+			byUser:  map[string]profile.Profile{"user-1": {UserID: "user-1", Bio: "mine"}},
+			deletes: &deletes,
+		}
+		rec := deleteMeAs(t, store, token, "/me")
+
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("token %q: status = %d, want 403", token, rec.Code)
+		}
+		if len(deletes) != 0 {
+			t.Errorf("token %q: deleted %v without a recent sign-in", token, deletes)
+		}
+		if _, ok := store.byUser["user-1"]; !ok {
+			t.Errorf("token %q: the profile is gone", token)
+		}
+	}
+}
+
+// Only what cannot be undone asks for a recent sign-in: reading and editing the profile do not.
+func TestProfileReadAndWriteDoNotNeedARecentSignIn(t *testing.T) {
+	store := fakeProfiles{byUser: map[string]profile.Profile{"user-1": {UserID: "user-1", Bio: "mine"}}}
+	if rec := getProfileAs(t, store, "signed-in-long-ago", "/me/profile"); rec.Code != http.StatusOK {
+		t.Errorf("GET /me/profile: status = %d, want 200", rec.Code)
+	}
+	if rec := getProfileAs(t, store, "no-auth-time", "/me/profile"); rec.Code != http.StatusOK {
+		t.Errorf("GET /me/profile without auth_time: status = %d, want 200", rec.Code)
+	}
+}
+
 func TestDeleteMeDeletesOwnData(t *testing.T) {
 	var deletes []string
 	store := fakeProfiles{
