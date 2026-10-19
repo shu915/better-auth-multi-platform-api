@@ -16,6 +16,7 @@ Go 1.27(標準の `net/http`。`go.mod` と Dockerfile のイメージに合わ�
 
 ## 守るルール(特に壊しやすいもの)
 - `user_id` はトークンの `sub` だけから取る(クエリやボディで他人を指せない)
+- 取り返しのつかない操作(今は `DELETE /me`)は `middleware.RequireRecentAuth` で包み、JWT の `auth_time` が 5 分以内であることを要求する(盗まれたセッションから作った JWT で素通りさせない)。デプロイは Web が先、Go が後(docs/design.md)
 - 公開鍵を取れないときは 401 ではなく 503
 - `user_id` を持つテーブルを足すマイグレーションは、同じ変更で `internal/userdata` の `Tables` に扱い(delete / anonymize / retain)を宣言する
 - `UPDATE` のたびに `updated_at = now()` を入れる(自動では更新されない)

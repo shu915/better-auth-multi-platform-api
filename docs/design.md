@@ -20,6 +20,11 @@ CLAUDE.md から切り出した、実装の方針と理由。コードを変え�
 - `internal/db`: プールは最大 10 接続、`statement_timeout` は 5 秒(`db.MaxConns`、`db.StatementTimeout`)
 - `internal/middleware/cors.go`: 認証ミドルウェアの外側に置く(プリフライトと 401 にも CORS ヘッダーを付けるため)
 - 保護するルートは `newMux` の `authn(...)` で包む(例: `GET /me`)
+- **取り返しのつかない操作は、新しいログインを要求する(`DELETE /me`)。** JWT の `auth_time`(Web の `jwt-plugin.ts` が載せる、セッションの作成時刻。秒)を `auth.Claims.AuthTime` に読み、`middleware.RequireRecentAuth(freshAuthWindow)` が、5 分より古い、または `auth_time` のない JWT を 403(`recent sign-in required`)で断る。理由: セッションの Cookie を盗んだ者は、Bearer として送り直して JWT をいつでも作れ(`iat` は新しくできる)、Go を直接呼べば、Web の退会にある「5 分以内のログイン」と通知メールを通らない。`auth_time` はそのやり方では新しくできない
+  - `auth_time` が欠けた・壊れた JWT は、JWT としては有効のまま(`AuthTime` はゼロ時刻)。断るのは、新しさを要求するルートだけ(`GET /me/profile` や `PUT /me/profile` は要求しない)。「分からない」は「新しくない」として扱う
+  - 窓は 5 分(`freshAuthWindow`)で、Web の `FRESH_SESSION_SECONDS` と同じ。Web 自身の退会は、それより 30 秒厳しい(`isSessionFresh`)ので、Web 経由の退会は境界に当たらない。時計のずれは未来側に 30 秒まで許す
+  - **デプロイは Web が先、Go が後。** 先に Go を出すと、`auth_time` のない JWT では退会が全部 403 になる
+  - 新しく「取り返しのつかない」ルートを足すときは、同じミドルウェアで包む
 
 ## ユーザーのデータの削除(退会)
 - `DELETE /me`(`cmd/server/profile.go` の `deleteMe`): 呼んだ本人のデータを消す。`user_id` はトークンの `sub` だけから取る。冪等で、データがなくても `204 No Content`(Web が失敗後に再送できるように)。5xx のときは中身を返さずログに残す。Web の退会は、この呼び出しの後に Better Auth の `deleteUser` を実行する(Web 側は実装済み: `src/lib/delete-account.ts`)

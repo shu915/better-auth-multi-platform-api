@@ -24,6 +24,11 @@ export GOOSE_DRIVER=postgres GOOSE_DBSTRING="postgres://postgres:postgres@localh
 - `down` は使わない(`DROP TABLE` でデータが消える)。前に進める方向だけ。戻したいときは新しいマイグレーションを足す
 - マイグレーション用(DDL)とアプリ実行用(SELECT / INSERT / UPDATE / DELETE のみ)の DB ユーザーは分けるのが望ましい(未実施)
 
+## Web との順序(auth_time)
+`DELETE /me` は、JWT の `auth_time`(Web の `jwt-plugin.ts` が載せる)が 5 分以内であることを要求する(docs/design.md)。
+- **デプロイは Web が先、Go が後。** 先に Go を出すと、`auth_time` のない JWT で退会が全部 403 になる
+- **ロールバックも同じ制約を受ける。** Web だけを `auth_time` を載せる前に戻すと、退会が全部 403 になる。戻すなら Go を先に戻す(Go が先に戻れば、`auth_time` を要求しなくなる)
+
 ## デプロイ先
 - API(この Go)とその DB は **Render**。Web は **Vercel + Neon**(Web のリポジトリの CLAUDE.md)
 - `AUTH_ISSUER` と `AUTH_JWKS_URL` は、Vercel の本番 URL(https)にする

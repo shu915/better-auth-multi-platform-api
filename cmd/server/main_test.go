@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/shu915/better-auth-multi-platform-api/internal/auth"
 	"github.com/shu915/better-auth-multi-platform-api/internal/profile"
@@ -14,11 +15,16 @@ var testOrigins = []string{"http://localhost:3000"}
 
 type fakeVerifier struct{}
 
-func (fakeVerifier) Verify(_ context.Context, token string) (string, error) {
-	if token == "good" {
-		return "user-1", nil
+func (fakeVerifier) Verify(_ context.Context, token string) (auth.Claims, error) {
+	switch token {
+	case "good": // signed in just now
+		return auth.Claims{UserID: "user-1", AuthTime: time.Now()}, nil
+	case "signed-in-long-ago":
+		return auth.Claims{UserID: "user-1", AuthTime: time.Now().Add(-time.Hour)}, nil
+	case "no-auth-time":
+		return auth.Claims{UserID: "user-1"}, nil
 	}
-	return "", auth.ErrInvalidToken
+	return auth.Claims{}, auth.ErrInvalidToken
 }
 
 func passThrough(next http.Handler) http.Handler { return next }

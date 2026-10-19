@@ -43,6 +43,19 @@ type Config struct {
 	Audience string
 }
 
+// Claims is what a verified token says about the caller.
+type Claims struct {
+	UserID string // the token's sub
+	// AuthTime is when the user last signed in: the web app's session creation time, from the
+	// "auth_time" claim. It is not when the token was issued (a stolen session can get a new
+	// token at any time but cannot make the sign-in newer). Zero when the token has no usable
+	// auth_time; a caller that needs a recent sign-in must treat zero as "not recent".
+	AuthTime time.Time
+}
+
+// maxAuthTimeSeconds bounds the auth_time claim so converting it to a time cannot overflow.
+const maxAuthTimeSeconds = 1 << 40
+
 type Verifier struct {
 	cfg   Config
 	cache *jwk.Cache
@@ -102,26 +115,27 @@ func checkJWKSURL(raw string) error {
 	return fmt.Errorf("auth: JWKS URL must be https (http is allowed only for localhost): %q", raw)
 }
 
-// Verify checks the signature, issuer, audience and expiry, and returns the user id (sub).
-func (v *Verifier) Verify(ctx context.Context, token string) (string, error) {
+// Verify checks the signature, issuer, audience and expiry, and returns what the token says about
+// the caller: the user id (sub) and when the user last signed in (auth_time).
+func (v *Verifier) Verify(ctx context.Context, token string) (Claims, error) {
 	msg, err := jws.Parse([]byte(token))
 	if err != nil || len(msg.Signatures()) != 1 {
-		return "", ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 	hdr := msg.Signatures()[0].ProtectedHeaders()
 
 	// Allow-list the algorithm; never trust the token to pick it (blocks "none" and HS/RS confusion).
 	if alg, ok := hdr.Algorithm(); !ok || alg != jwa.EdDSA() {
-		return "", ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 	kid, ok := hdr.KeyID()
 	if !ok || kid == "" {
-		return "", ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 
 	set, err := v.keySet(ctx, kid)
 	if err != nil {
-		return "", fmt.Errorf("auth: load jwks: %w", err)
+		return Claims{}, fmt.Errorf("auth: load jwks: %w", err)
 	}
 
 	tok, err := jwt.Parse([]byte(token),
@@ -132,17 +146,31 @@ func (v *Verifier) Verify(ctx context.Context, token string) (string, error) {
 		jwt.WithAcceptableSkew(clockSkew),
 	)
 	if err != nil {
-		return "", ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 
 	sub, ok := tok.Subject()
 	if !ok || sub == "" {
-		return "", ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
 	if _, ok := tok.Expiration(); !ok {
-		return "", ErrInvalidToken
+		return Claims{}, ErrInvalidToken
 	}
-	return sub, nil
+	return Claims{UserID: sub, AuthTime: authTimeOf(tok)}, nil
+}
+
+// authTimeOf reads the auth_time claim (seconds since the epoch). A token without a usable one
+// is still a valid token, so a missing or malformed claim gives the zero time rather than an error:
+// only the callers that need a recent sign-in refuse it.
+func authTimeOf(tok jwt.Token) time.Time {
+	var secs float64
+	if err := tok.Get("auth_time", &secs); err != nil {
+		return time.Time{}
+	}
+	if !(secs > 0 && secs < maxAuthTimeSeconds) { // also false for NaN
+		return time.Time{}
+	}
+	return time.Unix(int64(secs), 0)
 }
 
 // keySet returns the cached JWKS. If the cache is still empty, or kid is unknown

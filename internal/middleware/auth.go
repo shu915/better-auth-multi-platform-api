@@ -20,18 +20,26 @@ const logEvery = 30 * time.Second
 // maxTokenLen caps the bearer token size before any parsing; real tokens are well under 1KB.
 const maxTokenLen = 4096
 
-// TokenVerifier turns a bearer token into a user id. It must return an error wrapping
-// auth.ErrInvalidToken for a bad token; any other error means "could not check" (503).
+// TokenVerifier turns a bearer token into what it says about the caller. It must return an error
+// wrapping auth.ErrInvalidToken for a bad token; any other error means "could not check" (503).
 type TokenVerifier interface {
-	Verify(ctx context.Context, token string) (userID string, err error)
+	Verify(ctx context.Context, token string) (auth.Claims, error)
 }
 
 type userIDKey struct{}
+type authTimeKey struct{}
 
 // UserID returns the authenticated user id set by Authenticate.
 func UserID(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(userIDKey{}).(string)
 	return id, ok
+}
+
+// AuthTime returns when the user last signed in, set by Authenticate. It is false when the token
+// had no usable auth_time.
+func AuthTime(ctx context.Context) (time.Time, bool) {
+	t, ok := ctx.Value(authTimeKey{}).(time.Time)
+	return t, ok
 }
 
 // Authenticate rejects requests without a valid "Authorization: Bearer <jwt>" header.
@@ -44,7 +52,7 @@ func Authenticate(v TokenVerifier) func(http.Handler) http.Handler {
 				unauthorized(w)
 				return
 			}
-			userID, err := v.Verify(r.Context(), token)
+			claims, err := v.Verify(r.Context(), token)
 			if err != nil {
 				if errors.Is(err, auth.ErrInvalidToken) {
 					unauthorized(w)
@@ -57,7 +65,11 @@ func Authenticate(v TokenVerifier) func(http.Handler) http.Handler {
 				WriteError(w, http.StatusServiceUnavailable, "service unavailable")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userIDKey{}, userID)))
+			ctx := context.WithValue(r.Context(), userIDKey{}, claims.UserID)
+			if !claims.AuthTime.IsZero() {
+				ctx = context.WithValue(ctx, authTimeKey{}, claims.AuthTime)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
