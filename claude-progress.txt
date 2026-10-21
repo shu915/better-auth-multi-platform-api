@@ -17,11 +17,11 @@ claude-progress.txt (api)
 - DELETE /me は、JWT の auth_time が 5 分以内であることを要求する(2026-10-19、ブランチ feature/require-fresh-auth-for-delete)。盗まれたセッションから作った JWT で、Web の「5 分以内のログイン」と通知を通らずに退会データを消せる穴(Expo 対応で現実になった)を塞ぐ。auth_time は Web の fix/token-auth-time が載せる。**デプロイは Web が先、Go が後**
 
 ## 実行中のタスク
-- feature/require-fresh-auth-for-delete の PR(Web の fix/token-auth-time と組み。Web を先に出す)
+- feature/deleted-users-tombstone: 退会後の復活の窓を閉じる。マイグレーション 00002(deleted_users。開発 DB には適用済み)、DELETE /me が同じトランザクションで記録して profiles を消す、PUT /me/profile は 10 分以内の記録があれば 410、同じユーザーの操作は advisory lock で順番にする。go test は DB 込みで全部通る(SKIP なし)。evaluator は未。デプロイは、本番の DB に goose up(00002)をしてから Go を出す(先に Go を出すと PUT/DELETE が 500)
 
 ## 既知の限界(許容している)
 - レート制限がない(前段で行うなら Cloudflare など)
-- 退会後も JWT は最大 5 分有効で、その間の PUT /me/profile が行を作り直す(孤児データ)。**Expo 対応で直接呼ぶ設計になったので、この窓は現実になった。`auth_time` の要求では閉じない(未対応)**。次の PR で、upsert の前に user の存在を確認するか、トゥームストーンを置く
+- 退会後の 10 分間(`DeletionMemory`)は、そのユーザーの PUT /me/profile が 410 になる。退会が途中で止まったユーザー(Go のデータだけ消えて、Web のユーザーは残った)は、10 分たつと書けるようになる
 - DB の TLS は sslmode=require でサーバー証明書を検証しない。verify-full が通るかは未確認のため、コードでは強制しない
 - /health は DB を見ない(スキーマ未適用でも緑)。/ready は未実装。入れるなら Render のヘルスチェックは /health のままにする
 - アプリ用の DB ユーザーが DDL の権限を持つ
@@ -32,7 +32,6 @@ claude-progress.txt (api)
 - Render の無料プランはスリープする。スリープ明けの初回は Web が 5 秒で切れて bio が出ないことがある
 
 ## これからのタスク(順番)
-0. 退会後の復活の窓(上の限界)を閉じる(user の存在の確認か、トゥームストーン)
 1. single-db モードを先に作る(Tauri / Expo より前)
 2. verify-full で Render DB に繋がるか試す(DATABASE_URL を verify-full にして起動する)
 3. Tauri と Expo は、Go を変えずに足せる(CORS のオリジンの追加が要るかもしれない。Web 側の /token の HTTP 拒否も見直す)。直接 Go を呼ぶ設計になると、退会後に JWT で行が復活する窓が現実になるので、そのときにトゥームストーンを検討する
