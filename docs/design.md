@@ -35,7 +35,7 @@ CLAUDE.md から切り出した、実装の方針と理由。コードを変え�
   - `anonymize`: 残すが投稿者を外す。`user_id` は NULL 可で `ON DELETE SET NULL`(画面では「退会したユーザー」など)
   - `retain`: そのまま残す(保存義務など)。外部キーなし
 - `user_id` を持つテーブルを足すマイグレーションは、同じ変更で `Tables` に宣言する。足し忘れや外部キーの食い違いは、`internal/profile/userdata_test.go` の `TestDeclaredPoliciesMatchTheSchema` が落ちて分かる(`TEST_DATABASE_URL` が必要。DB のテスト用ヘルパーが `internal/profile` にあるため、テストもそこにある)
-- 退会後も、発行済みの JWT は最大 5 分有効。その間に別の端末から `PUT /me/profile` が来ると `profiles` の行が作り直される(孤児データ)。今は許容している(墓標のテーブルで防ぐ案はあるが、重いので見送り)。Web の退会は、先に Better Auth のセッションを全部失効させる → `DELETE /me` → ユーザー削除の順にして、窓を小さくしている
+- **退会後の復活の窓は、`deleted_users` で閉じている。** 退会後も発行済みの JWT は最大 5 分有効で、その間の `PUT /me/profile` が `profiles` の行を作り直すと、ユーザーのいないデータが残る(Web の退会が `profiles` を消したあと、Neon のユーザーも消える)。そこで `DELETE /me` は、同じトランザクションで `deleted_users(user_id, deleted_at)` に記録し(`DeletionMemory` = 10 分。JWT の 5 分と時計のずれより長い)、`profiles` の行を消す。10 分より古い記録は、退会と書き込み(`PUT /me/profile`)のたびに掃除する(ジョブはない。次のリクエストまでは残り得るが、何日も残ることはない。`FOR UPDATE SKIP LOCKED` で、同時のリクエストが互いを待たない)。`PUT /me/profile` は、書く前に 10 分以内の記録があれば 410(`account deleted`)で断る。**410 の意味は「そのユーザーは退会した(退会直後の古いトークン)」**で、通常の利用では出ない。クライアントは 401 以外の失敗として「保存できなかった」と扱ってよい。退会と書き込みが同時に来ても、同じユーザーの操作は `pg_advisory_xact_lock` で順番になるので、行は残らない。記憶を 10 分で止めるのは、退会が途中で止まった(Go のデータだけ消えて、ユーザーは残った)ユーザーが、いつまでも書けなくならないようにするため。`deleted_users` は `userdata` の方針では retain(id と時刻だけ)。Web の退会は、先に Better Auth のセッションを全部失効させる → `DELETE /me` → ユーザー削除の順で、窓をさらに小さくしている
 - `DELETE /me` が消すのは、この API のデータだけ。アカウント本体(Better Auth のユーザー)は Web の DB にあり、Web が消す
 - `updated_at` は自動では更新されない。`UPDATE` のたびに `updated_at = now()` を入れる
 

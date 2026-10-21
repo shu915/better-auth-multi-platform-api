@@ -227,6 +227,27 @@ func TestDeleteNeedsARecentSignInThroughRealJWTAndDB(t *testing.T) {
 	}
 }
 
+// The window this closes: a JWT issued before the deletion is valid for up to 5 minutes, and a
+// write with it used to create the profiles row again (data with no user).
+func TestAnOldTokenCannotRecreateTheProfileAfterDeletion(t *testing.T) {
+	e := newITEnv(t)
+	id, token := e.newUser(t)
+	e.do(t, http.MethodPut, "/me/profile", token, `{"bio":"before"}`)
+	if status, _ := e.do(t, http.MethodDelete, "/me", token, ""); status != http.StatusNoContent {
+		t.Fatalf("DELETE /me: status = %d, want 204", status)
+	}
+
+	if status, _ := e.do(t, http.MethodPut, "/me/profile", token, `{"bio":"after"}`); status != http.StatusGone {
+		t.Fatalf("PUT after DELETE: status = %d, want 410", status)
+	}
+	if _, err := e.store.Get(context.Background(), id); err == nil {
+		t.Fatal("the profiles row came back after DELETE /me")
+	}
+	if got := e.bioOf(t, token); got != "" {
+		t.Fatalf("bio = %q after the refused PUT, want empty", got)
+	}
+}
+
 func TestDeletingOneUserLeavesOthersAlone(t *testing.T) {
 	e := newITEnv(t)
 	_, alice := e.newUser(t)

@@ -93,6 +93,10 @@ func putProfile(store profileStore) http.Handler {
 		case errors.Is(err, profile.ErrInvalidBio):
 			middleware.WriteError(w, http.StatusUnprocessableEntity, "invalid bio")
 			return
+		case errors.Is(err, profile.ErrAccountDeleted):
+			// A token issued before the account was deleted: it must not bring the data back.
+			middleware.WriteError(w, http.StatusGone, "account deleted")
+			return
 		case err != nil:
 			log.Printf("put profile: %v", err)
 			internalError(w)

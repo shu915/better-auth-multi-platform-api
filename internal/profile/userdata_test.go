@@ -208,7 +208,10 @@ func TestDeletingTheProfileAppliesEachPolicy(t *testing.T) {
 	s, ctx := newTestStore(t)
 	schema := userdataTestSchema(ctx, t, s)
 	const userID = "test-userdata-behavior"
-	t.Cleanup(func() { _, _ = s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = $1`, userID) })
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = $1`, userID)
+		_, _ = s.pool.Exec(ctx, `DELETE FROM deleted_users WHERE user_id = $1`, userID)
+	})
 	mustExec(ctx, t, s, `CREATE TABLE `+schema+`.notes (id serial PRIMARY KEY, user_id text NOT NULL REFERENCES public.profiles(user_id) ON DELETE CASCADE)`)
 	mustExec(ctx, t, s, `CREATE TABLE `+schema+`.comments (id serial PRIMARY KEY, user_id text REFERENCES public.profiles(user_id) ON DELETE SET NULL)`)
 	mustExec(ctx, t, s, `CREATE TABLE `+schema+`.orders (id serial PRIMARY KEY, user_id text NOT NULL)`)
