@@ -34,5 +34,6 @@ const Root = "profiles"
 // Tables lists every table in the public schema that has a user_id column. Add a table here in
 // the same change that creates it.
 var Tables = map[string]Entry{
-	Root: {Policy: Delete, Reason: "the bio is the user's own data and is of no use without them"},
+	Root:            {Policy: Delete, Reason: "the bio is the user's own data and is of no use without them"},
+	"deleted_users": {Policy: Retain, Reason: "a record that the user is gone, kept for about ten minutes so a JWT issued before the deletion cannot recreate the profile; it holds only the id and a time"},
 }

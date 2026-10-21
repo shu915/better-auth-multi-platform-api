@@ -268,6 +268,13 @@ func TestPutProfileStoreErrorIsHiddenFromClient(t *testing.T) {
 	}
 }
 
+func TestPutProfileAfterTheAccountWasDeletedIsGone(t *testing.T) {
+	rec := putProfileAs(t, fakeProfiles{err: profile.ErrAccountDeleted}, "good", "/me/profile", `{"bio":"x"}`)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status = %d, want 410", rec.Code)
+	}
+}
+
 func deleteMeAs(t *testing.T, store fakeProfiles, token, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodDelete, target, nil)

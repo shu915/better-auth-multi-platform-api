@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -122,6 +123,7 @@ func TestDelete(t *testing.T) {
 	const userID, otherID = "test-user-delete", "test-user-delete-other"
 	t.Cleanup(func() {
 		_, _ = s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = ANY($1)`, []string{userID, otherID})
+		_, _ = s.pool.Exec(ctx, `DELETE FROM deleted_users WHERE user_id = ANY($1)`, []string{userID, otherID})
 	})
 	if _, err := s.Upsert(ctx, userID, "mine"); err != nil {
 		t.Fatal(err)
@@ -146,5 +148,123 @@ func TestDelete(t *testing.T) {
 	// only the caller's row goes
 	if got, err := s.Get(ctx, otherID); err != nil || got.Bio != "theirs" {
 		t.Errorf("another user's profile: got %+v, err %v", got, err)
+	}
+}
+
+// The point of deleted_users: a JWT issued before the deletion must not bring the profile back.
+func TestUpsertIsRefusedRightAfterDelete(t *testing.T) {
+	s, ctx := newTestStore(t)
+	const userID, otherID = "test-user-tombstone", "test-user-tombstone-other"
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = ANY($1)`, []string{userID, otherID})
+		_, _ = s.pool.Exec(ctx, `DELETE FROM deleted_users WHERE user_id = ANY($1)`, []string{userID, otherID})
+	})
+	if _, err := s.Upsert(ctx, userID, "mine"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Upsert(ctx, userID, "again"); !errors.Is(err, ErrAccountDeleted) {
+		t.Fatalf("upsert after delete: err = %v, want ErrAccountDeleted", err)
+	}
+	if _, err := s.Get(ctx, userID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the refused write created a row: err = %v", err)
+	}
+	// someone else is not affected
+	if _, err := s.Upsert(ctx, otherID, "fine"); err != nil {
+		t.Errorf("another user's write refused: %v", err)
+	}
+}
+
+func TestDeletionIsForgottenAfterDeletionMemory(t *testing.T) {
+	s, ctx := newTestStore(t)
+	const userID = "test-user-tombstone-expiry"
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = $1`, userID)
+		_, _ = s.pool.Exec(ctx, `DELETE FROM deleted_users WHERE user_id = $1`, userID)
+	})
+	if err := s.Delete(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	// Just inside the memory: still refused. Just outside: allowed (a user whose deletion stopped
+	// half way, with the user still there, must not be refused for good).
+	setAge := func(age time.Duration) {
+		t.Helper()
+		if _, err := s.pool.Exec(ctx, `UPDATE deleted_users SET deleted_at = now() - make_interval(secs => $2) WHERE user_id = $1`,
+			userID, age.Seconds()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setAge(DeletionMemory - time.Minute)
+	if _, err := s.Upsert(ctx, userID, "x"); !errors.Is(err, ErrAccountDeleted) {
+		t.Errorf("inside the memory: err = %v, want ErrAccountDeleted", err)
+	}
+	setAge(DeletionMemory + time.Minute)
+	if _, err := s.Upsert(ctx, userID, "x"); err != nil {
+		t.Errorf("after the memory: err = %v, want the write to go through", err)
+	}
+}
+
+func TestWritesForgetOldRecordsToo(t *testing.T) {
+	s, ctx := newTestStore(t)
+	const oldID, writerID = "test-user-tombstone-old-w", "test-user-tombstone-writer"
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = $1`, writerID)
+		_, _ = s.pool.Exec(ctx, `DELETE FROM deleted_users WHERE user_id = ANY($1)`, []string{oldID, writerID})
+	})
+	if _, err := s.pool.Exec(ctx, `INSERT INTO deleted_users (user_id, deleted_at) VALUES ($1, now() - interval '1 day')
+		ON CONFLICT (user_id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at`, oldID); err != nil {
+		t.Fatal(err)
+	}
+	// Nobody deletes an account here: an ordinary write is what tidies up.
+	if _, err := s.Upsert(ctx, writerID, "hi"); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM deleted_users WHERE user_id = $1`, oldID).Scan(&n); err != nil || n != 0 {
+		t.Errorf("an old record is still there: count = %d, err = %v", n, err)
+	}
+}
+
+func TestDeleteForgetsOldRecords(t *testing.T) {
+	s, ctx := newTestStore(t)
+	const oldID, newID = "test-user-tombstone-old", "test-user-tombstone-new"
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM deleted_users WHERE user_id = ANY($1)`, []string{oldID, newID})
+	})
+	if _, err := s.pool.Exec(ctx, `INSERT INTO deleted_users (user_id, deleted_at) VALUES ($1, now() - interval '1 day')
+		ON CONFLICT (user_id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at`, oldID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, newID); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM deleted_users WHERE user_id = $1`, oldID).Scan(&n); err != nil || n != 0 {
+		t.Errorf("an old record is still there: count = %d, err = %v", n, err)
+	}
+}
+
+// A write racing a deletion must never leave a row behind: either it lands first and the deletion
+// removes it, or it comes after and is refused.
+func TestWriteRacingADeletionLeavesNoRow(t *testing.T) {
+	s, ctx := newTestStore(t)
+	const userID = "test-user-tombstone-race"
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM profiles WHERE user_id = $1`, userID)
+		_, _ = s.pool.Exec(ctx, `DELETE FROM deleted_users WHERE user_id = $1`, userID)
+	})
+	for i := 0; i < 20; i++ {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM deleted_users WHERE user_id = $1`, userID)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = s.Upsert(ctx, userID, "x") }()
+		go func() { defer wg.Done(); _ = s.Delete(ctx, userID) }()
+		wg.Wait()
+		if _, err := s.Get(ctx, userID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("round %d: a row survived the deletion: err = %v", i, err)
+		}
 	}
 }
