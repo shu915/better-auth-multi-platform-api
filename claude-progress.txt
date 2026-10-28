@@ -1,29 +1,29 @@
 claude-progress.txt (api)
-最終更新: 2026-10-19
+最終更新: 2026-10-28
 新しいセッションは、最初にこのファイルと CLAUDE.md を読む。作業の区切り(goal の終わり)ごとに更新する。
 設計の詳細は docs/design.md、マイグレーションとデプロイの手順は docs/deploy.md。ここには状況だけを書く。
 
-## 完了したタスク
-- JWT の検証(EdDSA のみ、JWKS をキャッシュ、iss・aud・exp・sub を検証。公開鍵を取れないときは 503)
-- ルート: GET /health、GET /me、GET と PUT /me/profile、DELETE /me。CORS、no-store。user_id はトークンの sub だけから取る
-- profiles のマイグレーション(goose)と、PUT /me/profile の検証(bio 1000 文字、NUL と不正な UTF-8 は 422、本体 16KB まで)
-- 退会時のデータ削除: DELETE /me(204、冪等)。他のテーブルの扱いは internal/userdata の Tables に宣言し、食い違いはテストで落ちる
-- 耐障害: Recover、リクエストの期限(10 秒)、DB プール(10 接続)と statement_timeout(5 秒)、本番の設定の検査(https の JWKS、sslmode=require 以上)
-- テスト: 単体、結合(実 JWT 検証 + 実ストア + 実 Postgres)。CI は Postgres を立て、SKIP があれば失敗にする
-- hooks と evaluator、実装後のループ運用
-- 本番デプロイ(2026-10-09): Render(Docker、DB も Render、シンガポール)。Web との連携(JWT の検証、bio の読み書き、退会)を本番で確認済み
-- README を書いた
-- CLAUDE.md を軽くした(2026-10-10): 詳細を docs/design.md と docs/deploy.md に移した
-- DELETE /me は、JWT の auth_time が 5 分以内であることを要求する(2026-10-19、ブランチ feature/require-fresh-auth-for-delete)。盗まれたセッションから作った JWT で、Web の「5 分以内のログイン」と通知を通らずに退会データを消せる穴(Expo 対応で現実になった)を塞ぐ。auth_time は Web の fix/token-auth-time が載せる。**デプロイは Web が先、Go が後**
+## 状況: 完了
+Web、モバイル(Expo)、デスクトップ(Tauri)から、Go を変えずに使われている。本番(Render)で動いている。実行中のタスクはない。
 
-## 実行中のタスク
-- feature/deleted-users-tombstone: 退会後の復活の窓を閉じる。マイグレーション 00002(deleted_users。開発 DB には適用済み)、DELETE /me が同じトランザクションで記録して profiles を消す、PUT /me/profile は 10 分以内の記録があれば 410、同じユーザーの操作は advisory lock で順番にする。go test は DB 込みで全部通る(SKIP なし)。evaluator は未。デプロイは、本番の DB に goose up(00002)をしてから Go を出す(先に Go を出すと PUT/DELETE が 500)
+## できること(すべて main)
+- JWT の検証(EdDSA のみ、JWKS をキャッシュ、iss・aud・exp・sub を検証。公開鍵を取れないときは 503)
+- ルート: GET /health、GET /me、GET と PUT /me/profile(bio 1000 文字、NUL と不正な UTF-8 は 422、本体 16KB まで)、DELETE /me。CORS、no-store。user_id はトークンの sub だけから取る
+- DELETE /me: 冪等(204)。JWT の auth_time が 5 分以内であることを要求する(403)。同じトランザクションで deleted_users に記録し、退会から 10 分は PUT /me/profile を 410 で断つ(退会の途中の書き込みで復活しないため)。他のテーブルの扱いは internal/userdata に宣言し、食い違いはテストで落ちる
+- 耐障害: Recover、リクエストの期限(10 秒)、DB プール(10 接続)と statement_timeout(5 秒)、本番の設定の検査(https の JWKS、sslmode=require 以上)
+- テスト: 単体、結合(実 JWT 検証 + 実ストア + 実 Postgres)。CI は Postgres を立て、SKIP があれば失敗にする。hooks と evaluator
+- 本番デプロイ: Render(Docker、DB も Render、シンガポール)。マイグレーション 00001(profiles)と 00002(deleted_users)は適用済み。3 つのクライアントから本番で確認済み
+
+## 運用メモ
+- **Render の DB は 2026-11-08 に期限が切れる**(そのままにする方針)
+- デプロイの順: 初回は Go が先、Web が後。Go が新しいことを要求し始める変更(例: auth_time)は、Web が先
+- 新しいマイグレーションは、Go を出す前に、手元から本番の DB に適用する(docs/deploy.md)。先に Go を出すと 500
 
 ## 既知の限界(許容している)
 - レート制限がない(前段で行うなら Cloudflare など)
-- 退会後の 10 分間(`DeletionMemory`)は、そのユーザーの PUT /me/profile が 410 になる。退会が途中で止まったユーザー(Go のデータだけ消えて、Web のユーザーは残った)は、10 分たつと書けるようになる
+- 退会が途中で止まったユーザー(Go のデータだけ消えて、Web のユーザーは残った)は、10 分は書けず(410)、たつと書ける
 - DB の TLS は sslmode=require でサーバー証明書を検証しない。verify-full が通るかは未確認のため、コードでは強制しない
-- /health は DB を見ない(スキーマ未適用でも緑)。/ready は未実装。入れるなら Render のヘルスチェックは /health のままにする
+- /health は DB を見ない(スキーマ未適用でも緑)。/ready は未実装
 - アプリ用の DB ユーザーが DDL の権限を持つ
 - JWKS の再取得に 15 秒のクールダウンがあり、鍵のローテーション直後に偽の kid で消費されると、新しい kid の正規トークンが最長 15 秒 401 になる
 - JWT の最大有効期間は exp の存在しか見ていない(5 分は Web 側の設定頼み)
@@ -31,7 +31,6 @@ claude-progress.txt (api)
 - Dockerfile のベースイメージはタグ固定のみ(digest 固定ではない)
 - Render の無料プランはスリープする。スリープ明けの初回は Web が 5 秒で切れて bio が出ないことがある
 
-## これからのタスク(順番)
-1. single-db モードを先に作る(Tauri / Expo より前)
-2. verify-full で Render DB に繋がるか試す(DATABASE_URL を verify-full にして起動する)
-3. Tauri と Expo は、Go を変えずに足せる(CORS のオリジンの追加が要るかもしれない。Web 側の /token の HTTP 拒否も見直す)。直接 Go を呼ぶ設計になると、退会後に JWT で行が復活する窓が現実になるので、そのときにトゥームストーンを検討する
+## やるなら
+- verify-full で Render DB に繋がるか試す(DATABASE_URL を verify-full にして起動する)
+- /ready の追加、レート制限
